@@ -17,5 +17,5 @@ jobs:
         with:
           token: ${{ secrets.WORKFLOWS_TOKEN }}
           repository: 'heiweilu/zephyr'
-          retain_days: 1
+          retain_days: 5
           keep_minimum_runs: 3
