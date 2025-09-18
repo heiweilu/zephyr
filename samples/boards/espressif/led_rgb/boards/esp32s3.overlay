@@ -1,0 +1,45 @@
+
+#include <zephyr/dt-bindings/led/led.h>
+
+/ {
+    chosen {
+        zephyr,led-strip = &led_strip;
+    };
+};
+
+/* 配置 I2S0 引脚，把 I2S0 的数据输出脚映射到目标 GPIO
+ * 你需要确认哪根 GPIO 可做 I2S0 的 data out；官方示例用 GPIO38。
+ * 如果你一定要用 GPIO48，需要确认芯片是否支持 I2S0_O_SD_GPIO48 这种 pinmux 宏。
+ * 暂用示例：GPIO38。后续再替换为 48 时需查 pinmux 宏名字。
+ */
+&i2s0_default {
+    group1 {
+        pinmux = <I2S0_O_SD_GPIO48>;
+        output-enable;
+    };
+};
+
+/* 使能 I2S0 控制器并在其下挂 ws2812 子节点 */
+&i2s0 {
+    status = "okay";
+
+    /* DMA 配置（与 sample 一致），通道号 3 做 TX；若你的 SoC DTS 有不同，按需修改 */
+    dmas = <&dma 3>;
+    dma-names = "tx";
+
+    led_strip: ws2812@0 {
+        compatible = "worldsemi,ws2812-i2s";
+        reg = <0>;                              /* 虚拟地址标识 */
+        chain-length = <1>;                     /* 像素个数 */
+        color-mapping = <LED_COLOR_ID_GREEN
+                         LED_COLOR_ID_RED
+                         LED_COLOR_ID_BLUE>;    /* GRB 顺序 */
+        reset-delay = <500>;                    /* I2S 驱动推荐较大 reset */
+        label = "WS2812_LED";
+    };
+};
+
+/* 确保 DMA 控制器可用（若板 DTS 里本来就是 okay 可省略） */
+&dma {
+    status = "okay";
+};
