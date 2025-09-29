@@ -335,7 +335,11 @@ class BoardYmlCheck(ComplianceTest):
 
     def check_board_file(self, file, vendor_prefixes):
         """Validate a single board file."""
-        with open(file) as fp:
+        # Use explicit UTF-8 decoding: Windows default locale (e.g. cp936/gbk) may
+        # choke on valid UTF-8 bytes in board.yml (triggering UnicodeDecodeError
+        # seen in compliance run). Other parts of this script already open YAML
+        # with encoding='utf-8', so keep it consistent here.
+        with open(file, encoding='utf-8') as fp:
             for line_num, line in enumerate(fp.readlines(), start=1):
                 if "vendor:" in line:
                     _, vnd = line.strip().split(":", 2)
