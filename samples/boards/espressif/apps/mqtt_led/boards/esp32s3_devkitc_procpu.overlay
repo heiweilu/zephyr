@@ -34,3 +34,7 @@ i2s_led: &i2s0 {
 &dma {
 	status = "okay";
 };
+
+&wifi {
+	status = "okay";
+};

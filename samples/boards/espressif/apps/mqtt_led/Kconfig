@@ -19,4 +19,21 @@ config SAMPLE_LED_BRIGHTNESS
 
 endmenu
 
+menu "MQTT LED Sample Configuration"
+
+config APP_MQTT_BROKER_HOST
+	string "MQTT broker hostname or IP address"
+	default "broker.emqx.io"
+	help
+	  The hostname or IP address of the MQTT broker to connect to.
+
+config APP_MQTT_BROKER_PORT
+	int "MQTT broker port"
+	default 1883
+	range 1 65535
+	help
+	  The port number of the MQTT broker to connect to.
+
+endmenu
+
 source "Kconfig.zephyr"
