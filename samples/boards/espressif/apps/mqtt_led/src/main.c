@@ -9,7 +9,6 @@
 #include <string.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/sys/util.h>
-
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
