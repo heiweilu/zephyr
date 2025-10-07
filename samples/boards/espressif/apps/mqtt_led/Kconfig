@@ -1,0 +1,39 @@
+# Copyright (c) 2019 Nordic Semiconductor ASA
+# SPDX-License-Identifier: Apache-2.0
+
+menu "WS2812 Sample Configuration"
+
+config SAMPLE_LED_UPDATE_DELAY
+	int "Delay between LED updates in ms"
+	default 50
+	help
+	  Delay between LED updates in ms.
+
+config SAMPLE_LED_BRIGHTNESS
+	int "LED brightness"
+	default 16
+	range 1 255
+	help
+	  Brightness level of each LED. Defaults to a low value to make
+	  it easier to distinguish colors.
+
+endmenu
+
+menu "MQTT LED Sample Configuration"
+
+config APP_MQTT_BROKER_HOST
+	string "MQTT broker hostname or IP address"
+	default "broker.emqx.io"
+	help
+	  The hostname or IP address of the MQTT broker to connect to.
+
+config APP_MQTT_BROKER_PORT
+	int "MQTT broker port"
+	default 1883
+	range 1 65535
+	help
+	  The port number of the MQTT broker to connect to.
+
+endmenu
+
+source "Kconfig.zephyr"
