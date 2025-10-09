@@ -218,7 +218,7 @@ static void app_mqtt_client_prepare(void)
 	client.client_id.size = strlen((char *)client.client_id.utf8);
 	client.user_name = NULL;
 	client.password = NULL;
-	client.protocol_version = MQTT_VERSION_5_0;
+	client.protocol_version = MQTT_VERSION_3_1_0;
 	client.transport.type = MQTT_TRANSPORT_NON_SECURE;
 	client.rx_buf = rx_buffer;
 	client.rx_buf_size = sizeof(rx_buffer);
