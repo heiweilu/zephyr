@@ -31,9 +31,10 @@ static const struct gpio_dt_spec backlight = GPIO_DT_SPEC_GET(DT_ALIAS(backlight
  * 2. Only test LVGL functionality: ENABLE_BASIC_LCD_TEST=0, ENABLE_LVGL_TEST=1
  * 3. Disabling both will cause an error
  */
-#define ENABLE_LVGL_TEST      0 /* 1: Enable LVGL test, 0: Disable */
-#define ENABLE_BASIC_LCD_TEST 1 /* 1: Enable basic LCD test, 0: Disable */
+#define ENABLE_LVGL_TEST      1 /* 1: Enable LVGL test with standard APIs, 0: Disable */
+#define ENABLE_BASIC_LCD_TEST 0 /* 1: Enable basic LCD test, 0: Disable */
 
+#if ENABLE_BASIC_LCD_TEST
 /* Draw a border */
 static void draw_border(uint16_t *buf, int width, int height, uint16_t color)
 {
@@ -146,7 +147,7 @@ static void draw_float(uint16_t *buf, int width, int height, float number, int x
 		       uint16_t color)
 {
 	char num_str[16];
-	snprintf(num_str, sizeof(num_str), "%.1f", number);
+	snprintf(num_str, sizeof(num_str), "%.1f", (double)number);
 
 	int char_x = x;
 	for (int i = 0; num_str[i] != '\0'; i++) {
@@ -178,7 +179,9 @@ static void draw_text(uint16_t *buf, int width, int height, const char *text, in
 		}
 	}
 }
+#endif /* ENABLE_BASIC_LCD_TEST */
 
+#if ENABLE_BASIC_LCD_TEST
 /**
  * @brief Basic LCD test function
  * @param disp Display device pointer
@@ -334,7 +337,7 @@ static int test_basic_lcd(const struct device *disp)
 		ret = display_write(disp, 0, 0, &desc, test_buf);
 		if (ret == 0) {
 			LOG_INF("Frame %d: Counter=%d, Number=%.1f, Message='%s'", counter, counter,
-				number + counter * 0.1f, messages[msg_idx]);
+				(double)(number + counter * 0.1f), messages[msg_idx]);
 		} else {
 			LOG_ERR("Display write failed: %d", ret);
 		}
@@ -345,105 +348,218 @@ static int test_basic_lcd(const struct device *disp)
 
 	return 0;
 }
+#endif /* ENABLE_BASIC_LCD_TEST */
 
-/* LVGL ：display text and dynamic counter */
+/* LVGL: Enhanced display with standard APIs for text and dynamic counter */
 static int test_lvgl_widgets(const struct device *disp)
 {
-	LOG_INF("===== Running LVGL test =====");
+	LOG_INF("===== Running LVGL test with standard APIs =====");
 
 	struct display_capabilities caps;
 	display_get_capabilities(disp, &caps);
 	LOG_INF("LVGL Display: %dx%d, pixel format: %d", caps.x_resolution, caps.y_resolution,
 		caps.current_pixel_format);
 
-	/* ！Turn off monitor blanking mode */
+	/* 验证显示分辨率 */
+	if (caps.x_resolution != 240 || caps.y_resolution != 135) {
+		LOG_WRN("Unexpected resolution: %dx%d, expected 240x135", 
+			caps.x_resolution, caps.y_resolution);
+	}
+
+	/* Turn off monitor blanking mode */
 	display_blanking_off(disp);
 
-	/* Wait lvgl ready */
+	/* Wait for LVGL to be ready */
 	k_msleep(500);
 
-	/* Get the screen object */
+	/* Get the active screen object */
 	lv_obj_t *scr = lv_screen_active();
 
 	/* Set black background */
 	lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
 
-	/* Creat title */
-	lv_obj_t *title = lv_label_create(scr);
-	lv_label_set_text(title, "ESP32-S3 TFT Demo");
-	lv_obj_set_style_text_color(title, lv_palette_main(LV_PALETTE_CYAN), LV_PART_MAIN);
-	lv_obj_set_style_text_font(title, &lv_font_montserrat_14, LV_PART_MAIN);
-	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+	/* Create a white border container on black background */
+	lv_obj_t *border_container = lv_obj_create(scr);
+	lv_obj_set_size(border_container, caps.x_resolution - 4, caps.y_resolution - 4);
+	lv_obj_align(border_container, LV_ALIGN_CENTER, 0, 0);
+	lv_obj_set_style_bg_color(border_container, lv_color_black(), LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(border_container, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_border_color(border_container, lv_color_white(), LV_PART_MAIN);
+	lv_obj_set_style_border_width(border_container, 3, LV_PART_MAIN);
+	lv_obj_set_style_border_opa(border_container, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_radius(border_container, 0, LV_PART_MAIN);
+	lv_obj_set_style_pad_all(border_container, 8, LV_PART_MAIN);
 
-	/* Create status label */
-	lv_obj_t *status_label = lv_label_create(scr);
-	lv_label_set_text(status_label, "System Ready");
-	lv_obj_set_style_text_color(status_label, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
-	lv_obj_align(status_label, LV_ALIGN_CENTER, 0, -20);
+	/* Create title (bright cyan text) */
+	lv_obj_t *title = lv_label_create(border_container);
+	lv_label_set_text(title, "ESP32-S3 LVGL");
+	lv_obj_set_style_text_color(title, lv_color_make(0x00, 0xFF, 0xFF), LV_PART_MAIN); /* Cyan */
+	lv_obj_set_style_text_font(title, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(title, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(title, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(title, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(title, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(title, 5, 5);
 
-	/* Create counter label */
-	lv_obj_t *counter_label = lv_label_create(scr);
-	lv_obj_set_style_text_color(counter_label, lv_palette_main(LV_PALETTE_YELLOW),
-				    LV_PART_MAIN);
-	lv_obj_align(counter_label, LV_ALIGN_CENTER, 0, 10);
+	/* Create counter label (bright green text) */
+	lv_obj_t *counter_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(counter_label, lv_color_make(0x00, 0xFF, 0x00), LV_PART_MAIN); /* Green */
+	lv_obj_set_style_text_font(counter_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(counter_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(counter_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(counter_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(counter_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(counter_label, 5, 25);
 
-	/* Create number display area */
-	lv_obj_t *number_label = lv_label_create(scr);
-	lv_label_set_text(number_label, "Number: 123.456");
-	lv_obj_set_style_text_color(number_label, lv_palette_main(LV_PALETTE_ORANGE), LV_PART_MAIN);
-	lv_obj_align(number_label, LV_ALIGN_CENTER, 0, 30);
+	/* Create number display (bright yellow text) */
+	lv_obj_t *number_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(number_label, lv_color_make(0xFF, 0xFF, 0x00), LV_PART_MAIN); /* Yellow */
+	lv_obj_set_style_text_font(number_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(number_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(number_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(number_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(number_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(number_label, 5, 45);
 
-	/* Create text display area */
-	lv_obj_t *text_label = lv_label_create(scr);
-	lv_label_set_text(text_label, "Text: Hello World!");
-	lv_obj_set_style_text_color(text_label, lv_palette_main(LV_PALETTE_PINK), LV_PART_MAIN);
-	lv_obj_align(text_label, LV_ALIGN_CENTER, 0, 50);
+	/* Create floating point display (bright magenta text) */
+	lv_obj_t *float_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(float_label, lv_color_make(0xFF, 0x00, 0xFF), LV_PART_MAIN); /* Magenta */
+	lv_obj_set_style_text_font(float_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(float_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(float_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(float_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(float_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(float_label, 5, 65);
 
-	/* Creat a button */
-	lv_obj_t *btn = lv_button_create(scr);
-	lv_obj_set_size(btn, 100, 40);
-	lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -10);
-	lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), LV_PART_MAIN);
+	/* Create time display (bright red text) */
+	lv_obj_t *time_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(time_label, lv_color_make(0xFF, 0x00, 0x00), LV_PART_MAIN); /* Red */
+	lv_obj_set_style_text_font(time_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(time_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(time_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(time_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(time_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(time_label, 120, 25);
+
+	/* Create FPS display (bright blue text) */
+	lv_obj_t *fps_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(fps_label, lv_color_make(0x00, 0x80, 0xFF), LV_PART_MAIN); /* Light Blue */
+	lv_obj_set_style_text_font(fps_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(fps_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(fps_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(fps_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(fps_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(fps_label, 120, 45);
+
+	/* Create text display (bright orange text) */
+	lv_obj_t *text_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(text_label, lv_color_make(0xFF, 0x80, 0x00), LV_PART_MAIN); /* Orange */
+	lv_obj_set_style_text_font(text_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(text_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(text_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(text_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(text_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(text_label, 120, 65);
+
+	/* Create status label (bright lime green text) */
+	lv_obj_t *status_label = lv_label_create(border_container);
+	lv_obj_set_style_text_color(status_label, lv_color_make(0x80, 0xFF, 0x00), LV_PART_MAIN); /* Lime Green */
+	lv_obj_set_style_text_font(status_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(status_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(status_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(status_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(status_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_set_pos(status_label, 5, 85);
+	lv_label_set_text(status_label, "STAT");
+
+	/* Create button with colorful design */
+	lv_obj_t *btn = lv_btn_create(border_container);
+	lv_obj_set_size(btn, 60, 20);
+	lv_obj_set_pos(btn, 160, 55);
+	lv_obj_set_style_bg_color(btn, lv_color_make(0x40, 0x00, 0x80), LV_PART_MAIN); /* Dark Purple */
+	lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(btn, 0, LV_PART_MAIN);
+	lv_obj_set_style_radius(btn, 0, LV_PART_MAIN);
 
 	lv_obj_t *btn_label = lv_label_create(btn);
-	lv_label_set_text(btn_label, "Test Button");
-	lv_obj_set_style_text_color(btn_label, lv_color_white(), LV_PART_MAIN);
+	lv_label_set_text(btn_label, "Demo");
+	lv_obj_set_style_text_color(btn_label, lv_color_make(0xFF, 0xFF, 0x80), LV_PART_MAIN); /* Light Yellow */
+	lv_obj_set_style_text_font(btn_label, &lv_font_unscii_8, LV_PART_MAIN);
+	lv_obj_set_style_text_opa(btn_label, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_shadow_width(btn_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_outline_width(btn_label, 0, LV_PART_MAIN);
+	lv_obj_set_style_text_decor(btn_label, LV_TEXT_DECOR_NONE, LV_PART_MAIN);
+	lv_obj_center(btn_label);
 	lv_obj_center(btn_label);
 
 	int counter = 0;
+	float base_number = 123.456f;
+	uint32_t start_time = k_uptime_get_32();
+	uint32_t frame_count = 0;
 
-	/* Init refresh */
+	/* Initial refresh */
 	lv_timer_handler();
 
 	while (1) {
-		/* Update display */
-		lv_label_set_text_fmt(counter_label, "Count: %d", counter);
-		lv_label_set_text_fmt(number_label, "Number: %d.%03d", counter,
-				      (counter * 123) % 1000);
+		uint32_t current_time = k_uptime_get_32();
+		
+		/* Update counter display */
+		lv_label_set_text_fmt(counter_label, "%d", counter);
 
-		/* Change the character content every once in a while */
+		/* Update integer number display */
+		lv_label_set_text_fmt(number_label, "%d", counter * 7 + 100);
+
+		/* Update floating point display */
+		lv_label_set_text_fmt(float_label, "%.1f", 
+				      (double)(base_number + (counter * 0.1f)));
+
+		/* Update time display */
+		lv_label_set_text_fmt(time_label, "%d.%ds", 
+				      (int)(current_time / 1000), 
+				      (int)((current_time % 1000) / 100));
+
+		/* Calculate and display FPS */
+		frame_count++;
+		if (current_time - start_time > 0) {
+			uint32_t fps = (frame_count * 1000) / (current_time - start_time);
+			lv_label_set_text_fmt(fps_label, "%d", (int)fps);
+		}
+
+		/* Rotate simple text */
 		if (counter % 8 == 0) {
-			const char *texts[] = {"Text: Hello World!", "Text: ESP32-S3 OK!",
-					       "Text: LVGL Works!", "Text: Display Test"};
+			const char *texts[] = {
+				"API", 
+				"OK", 
+				"NUM",
+				"RUN"
+			};
 			lv_label_set_text(text_label, texts[counter / 8 % 4]);
 		}
 
-		/* Change the status text color at intervals */
+		/* Change status */
 		if (counter % 20 == 0) {
-			lv_color_t colors[] = {lv_palette_main(LV_PALETTE_GREEN),
-					       lv_palette_main(LV_PALETTE_ORANGE),
-					       lv_palette_main(LV_PALETTE_RED),
-					       lv_palette_main(LV_PALETTE_PURPLE)};
-			lv_obj_set_style_text_color(status_label, colors[counter / 20 % 4],
-						    LV_PART_MAIN);
+			const char *statuses[] = {
+				"OK", 
+				"GO", 
+				"UP", 
+				"ON"
+			};
+			lv_label_set_text(status_label, statuses[(counter / 20) % 4]);
+		}
+
+		/* Update button text */
+		if (counter % 30 == 0) {
+			lv_label_set_text_fmt(btn_label, "%d", counter / 30);
 		}
 
 		counter++;
 
+		/* Handle LVGL tasks */
 		lv_timer_handler();
 
-		k_msleep(500);
+		/* Adjust sleep time for smoother animation */
+		k_msleep(100);
 	}
 
 	return 0;
@@ -462,7 +578,7 @@ int main(void)
 #if DT_NODE_EXISTS(TFT_NODE) && DT_NODE_EXISTS(DT_ALIAS(backlight))
 	if (gpio_is_ready_dt(&backlight)) {
 		gpio_pin_configure_dt(&backlight, GPIO_OUTPUT_ACTIVE); /* open backlight */
-		LOG_INF("Backlight on pin->:%s ", backlight.pin);
+		LOG_INF("Backlight on pin: %d", backlight.pin);
 	}
 #endif
 
