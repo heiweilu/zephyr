@@ -1,8 +1,36 @@
 /*
- * Based on ST7789V sample with LVGL label display:
+ * ESP32-S3 TFT Display Application with LVGL
  * Copyright (c) 2025 Heiweilu
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * ========================================
+ * ESP32-S3 + ST7789V TFT Display Application
+ * =======================================
+ *
+ * Hardware Configuration:
+ * - Development Board: ESP32-S3 DevKit
+ * - Display: ST7789V TFT (240x135 RGB565)
+ * - Connection Method: SPI Interface + GPIO Backlight Control
+ *
+ * Software Architecture:
+ * - Zephyr RTOS 4.2.99
+ * - LVGL 9.x GUI Framework
+ * - Modular Design: Using the lvgl_wrapper Wrapper Library
+ *
+ * Features:
+ * - Modern GUI Interface Design
+ * - Status bar: Time display + status icons
+ * - Content area: Data card display (sensor data such as temperature)
+ * - Bottom navigation: Navigation controls such as the HOME button
+ * - Real-time data updates
+ *
+ * Wrapper libraries used:
+ * - lvgl_wrapper.h: LVGL control wrapper function declarations
+ * - lvgl_wrapper.c: LVGL control wrapper function implementations
+ *
+ * Compile command:
+ * west build -b esp32s3_devkitc/esp32s3/procpu .\samples\boards\espressif\apps\lcd\tft\
  */
 
 #include <zephyr/kernel.h>
@@ -16,16 +44,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <lvgl_input_device.h>
-
-#ifdef CONFIG_LVGL
-#include <lvgl.h>
-#endif
-
-LV_FONT_DECLARE(lv_font_unscii_8)
-
+#include "lvgl_wrapper.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+
+LV_FONT_DECLARE(lv_font_unscii_8)
 
 #define TFT_NODE DT_CHOSEN(zephyr_display)
 
@@ -187,9 +211,6 @@ static void draw_text(uint16_t *buf, int width, int height, const char *text, in
 		}
 	}
 }
-#endif /* ENABLE_BASIC_LCD_TEST */
-
-#if ENABLE_BASIC_LCD_TEST
 /**
  * @brief Basic LCD test function
  * @param disp Display device pointer
@@ -358,72 +379,66 @@ static int test_basic_lcd(const struct device *disp)
 }
 #endif /* ENABLE_BASIC_LCD_TEST */
 
-/* Simple icon data - 16x16 pixels using Unicode symbols */
-#define ICON_SETTINGS "\xE2\x9A\x99"    /* Gear symbol */ 
-#define ICON_BATTERY "\xF0\x9F\x94\x8B"  /* Battery symbol */
-#define ICON_CLOCK   "\xF0\x9F\x95\x90"  /* Clock symbol */
-#define ICON_TEMP    "\xF0\x9F\x8C\xA1"  /* Thermometer */
-
-/* Simple image patterns (16x16 icons) - RGB565 format */
-static const uint16_t icon_home[16*16] = {
-    /* Simple house icon pattern */
-    0x0000,0x0000,0x0000,0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,
-    0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0xF800,0xF800,0x07E0,0x07E0,0xF800,0xF800,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0xF800,0xF800,0x07E0,0x07E0,0xF800,0xF800,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0xFFE0,0xFFE0,0xFFE0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x07E0,0x07E0,0x07E0,0x07E0,0xFFE0,0xFFE0,0xFFE0,0x07E0,0x07E0,0x07E0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
-};
-
 /* Weather icon patterns */
-static const uint16_t icon_sun[16*16] = {
-    0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0xFFE0,0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0xFFE0,0x0000,
-    0x0000,0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0x0000,0x0000,
-    0xFFE0,0x0000,0x0000,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0xFFE0,0x0000,0x0000,0xFFE0,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,0xFFE0,0x0000,0x0000,0x0000,0x0000,0x0000,
-    0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,
+static const uint16_t icon_sun[16 * 16] = {
+	0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0x0000,
+	0x0000, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0xFFE0,
+	0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000,
+	0xFFE0, 0x0000, 0x0000, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0, 0xFFE0,
+	0xFFE0, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0xFFE0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000,
 };
 
-/* GUI Application Structure */
+/* GUI Application Structure - Modular Design */
 typedef struct {
-    lv_obj_t *main_screen;	
-    lv_obj_t *status_bar;
-    lv_obj_t *content_area;
-    lv_obj_t *bottom_nav;
-    
-    /* Status bar widgets */
-    lv_obj_t *time_label;
-    lv_obj_t *battery_icon;
-    
-    /* Content widgets */
-    lv_obj_t *temp_card;
-    
-    /* Navigation buttons */
-    lv_obj_t *home_btn;			
-    
-    uint32_t last_update;
-    int current_page;
+	lv_obj_t *main_screen;
+
+	/* Status Bar Components */
+	struct {
+		lv_obj_t *container;
+		lv_obj_t *time_label;
+		lv_obj_t *weather_icon;
+	} status_bar;
+
+	/* Content Area Components */
+	struct {
+		lv_obj_t *container;
+		lv_obj_t *temp_card;
+		lv_obj_t *temp_label; /* 保存温度标签的引用 */
+		lv_obj_t *counter_card;
+		lv_obj_t *counter_label; /* 保存计数器标签的引用 */
+	} content_area;
+
+	/* Bottom Navigation Components */
+	struct {
+		lv_obj_t *container;
+		lv_obj_t *home_btn;
+	} bottom_nav;
+
+	/* Application State */
+	struct {
+		uint32_t last_update;
+		int current_page;
+		bool initialized;
+	} state;
 } gui_app_t;
 
 static gui_app_t app = {0};
@@ -431,225 +446,155 @@ static gui_app_t app = {0};
 /* Event handlers */
 static void nav_btn_event_handler(lv_event_t *e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_CLICKED) {
-        lv_obj_t *btn = lv_event_get_target_obj(e);
-        int page = (int)(intptr_t)lv_event_get_user_data(e);
-        app.current_page = page;
-        LOG_INF("Navigation: Page %d selected", page);
-        
-        /* Update button styles to show active state */
-        lv_obj_set_style_bg_color(app.home_btn, lv_color_make(0x40, 0x40, 0x40), 0);
-        
-        lv_obj_set_style_bg_color(btn, lv_color_make(0x00, 0x80, 0xFF), 0);
-    }
-}
+	lv_event_code_t code = lv_event_get_code(e);
+	if (code == LV_EVENT_CLICKED) {
+		lv_obj_t *btn = lv_event_get_target_obj(e);
+		int page = (int)(intptr_t)lv_event_get_user_data(e);
+		app.state.current_page = page;
+		LOG_INF("Navigation: Page %d selected", page);
 
-/* Create a simple colored rectangle as icon placeholder */
-static lv_obj_t *create_icon_image(lv_obj_t *parent, const uint16_t *icon_data, int x, int y)
-{
-    /* Create a simple colored rectangle for now */
-    lv_obj_t *icon_rect = lv_obj_create(parent);
-    lv_obj_set_size(icon_rect, 16, 16);
-    lv_obj_set_pos(icon_rect, x, y);
-    
-    /* Set color based on icon type */
-    lv_color_t icon_color = lv_color_hex(0x07E0); /* Default green */
-	if (icon_data == icon_sun) {
-        icon_color = lv_color_hex(0xFFE0); /* Yellow for sun */
-    }
-    
-    lv_obj_set_style_bg_color(icon_rect, icon_color, 0);
-    lv_obj_set_style_radius(icon_rect, 2, 0);
-    lv_obj_set_style_border_width(icon_rect, 1, 0);
-    lv_obj_set_style_border_color(icon_rect, lv_color_white(), 0);
-    
-    /* Add a simple text label to identify the icon */
-    lv_obj_t *icon_label = lv_label_create(icon_rect);
-	if (icon_data == icon_sun) {
-        lv_label_set_text(icon_label, "S");
-    } else {
-        lv_label_set_text(icon_label, "?");
-    }
-    lv_obj_set_style_text_color(icon_label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(icon_label, &lv_font_unscii_8, 0);
-    lv_obj_center(icon_label);
-    
-    return icon_rect;
+		/* Update button styles to show active state */
+		lv_obj_set_style_bg_color(app.bottom_nav.home_btn, lv_color_make(0x40, 0x40, 0x40),
+					  0);
+
+		lv_obj_set_style_bg_color(btn, lv_color_make(0x00, 0x80, 0xFF), 0);
+	}
 }
 
 /* Create status bar */
 static void create_status_bar(void)
 {
-    app.status_bar = lv_obj_create(app.main_screen);
+	app.status_bar.container = create_container(app.main_screen, 240, 25, 0, 0, 30, 0, 2,
+						    lv_color_make(0x20, 0x20, 0x20), 1);
 
-	/* Set style */
-    lv_obj_set_size(app.status_bar, 240, 25);
-    lv_obj_set_pos(app.status_bar, 0, 0);
-    lv_obj_set_style_bg_color(app.status_bar, lv_color_make(0x20, 0x20, 0x20), 0);
-    lv_obj_set_style_radius(app.status_bar, 30, 0);				
-    lv_obj_set_style_border_width(app.status_bar, 0, 0);
-    lv_obj_set_style_pad_all(app.status_bar, 2, 0);
-    
-    /* Time label */
-    app.time_label = lv_label_create(app.status_bar);
-	lv_obj_set_style_text_font(app.time_label, &lv_font_unscii_8, 0);  
-    lv_label_set_text(app.time_label, "12:34");
-    lv_obj_set_style_text_color(app.time_label, lv_color_white(), 0);
-    lv_obj_set_pos(app.time_label, 5, 3);
-    
-    /* Sun icon */
-    create_icon_image(app.status_bar, icon_sun, 120, 5);
-    
-    /* Battery text (simple) */
-    app.battery_icon = lv_label_create(app.status_bar);
-	lv_obj_set_style_text_font(app.battery_icon, &lv_font_unscii_8, 0);
-    lv_obj_set_style_text_color(app.battery_icon, lv_color_make(0xFF, 0xFF, 0xFF), 0);
-    lv_label_set_text(app.battery_icon, "85%");
-    lv_obj_set_pos(app.battery_icon, 200, 3);
+	/* Time label */
+	app.status_bar.time_label = create_label(app.status_bar.container, "12:34", 5, 3,
+						 lv_color_white(), &lv_font_unscii_8, false);
+
+	/* Weather icon */
+	app.status_bar.weather_icon = create_icon_image(app.status_bar.container, icon_sun, 120, 5);
 }
 
 /* Create content area with cards */
 static void create_content_area(void)
 {
-    app.content_area = lv_obj_create(app.main_screen);
-    lv_obj_set_size(app.content_area, 240, 85);
-    lv_obj_set_pos(app.content_area, 0, 25);
-    lv_obj_set_style_bg_color(app.content_area, lv_color_make(0x10, 0x10, 0x10), 0);
-    lv_obj_set_style_radius(app.content_area, 0, 0);
-    lv_obj_set_style_border_width(app.content_area, 0, 0);
-    lv_obj_set_style_pad_all(app.content_area, 5, 0);
-    
-    /* Temperature Card */
-    app.temp_card = lv_obj_create(app.content_area);
-    lv_obj_set_size(app.temp_card, 70, 60);
-    lv_obj_set_pos(app.temp_card, 5, 5);
-    lv_obj_set_style_bg_color(app.temp_card, lv_color_make(0xFF, 0x40, 0x40), 0);
-    lv_obj_set_style_radius(app.temp_card, 8, 0);
-    lv_obj_set_style_border_width(app.temp_card, 0, 0);
-    
-    lv_obj_t *temp_label = lv_label_create(app.temp_card);
-    lv_label_set_text(temp_label, "TEMP\n23.5°C");
-	lv_obj_set_style_text_font(temp_label, &lv_font_unscii_8, LV_PART_MAIN);
-    lv_obj_set_style_text_color(temp_label, lv_color_white(), 0);
-    lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(temp_label);
-    
+	/* Content container */
+	app.content_area.container = create_container(app.main_screen, 240, 85, 0, 25, 0, 0, 5,
+						      lv_color_make(0x10, 0x10, 0x10), 1);
+
+	/* Temperature Card */
+	app.content_area.temp_card =
+		create_card_with_label(app.content_area.container, "TEMP", "25.0C", 70, 60, 5, 5, 8,
+				       lv_color_make(0xFF, 0x40, 0x40), lv_color_white());
+
+	/* 获取温度卡片中的标签引用 */
+	app.content_area.temp_label = lv_obj_get_child(app.content_area.temp_card, 0);
+
+	/* Counter Card */
+	app.content_area.counter_card =
+		create_card_with_label(app.content_area.container, "COUNT", "0", 70, 60, 85, 5, 8,
+				       lv_color_make(0x40, 0xFF, 0x40), lv_color_white());
+
+	/* 获取计数器卡片中的标签引用 */
+	app.content_area.counter_label = lv_obj_get_child(app.content_area.counter_card, 0);
 }
 
 /* Create bottom navigation */
 static void create_bottom_navigation(void)
 {
-    app.bottom_nav = lv_obj_create(app.main_screen);
-    lv_obj_set_size(app.bottom_nav, 240, 25);
-    lv_obj_set_pos(app.bottom_nav, 0, 110);
-    lv_obj_set_style_bg_color(app.bottom_nav, lv_color_make(0x30, 0x30, 0x30), 0);
-    lv_obj_set_style_radius(app.bottom_nav, 0, 0);
-    lv_obj_set_style_border_width(app.bottom_nav, 0, 0);
-    lv_obj_set_style_pad_all(app.bottom_nav, 2, 0);
-    
-    /* Home button */
-    app.home_btn = lv_btn_create(app.bottom_nav);
-    lv_obj_set_size(app.home_btn, 60, 20);
-    lv_obj_set_pos(app.home_btn, 10, 2);
-    lv_obj_set_style_bg_color(app.home_btn, lv_color_make(0x00, 0x80, 0xFF), 0);
-    lv_obj_set_style_radius(app.home_btn, 3, 0);
-    lv_obj_add_event_cb(app.home_btn, nav_btn_event_handler, LV_EVENT_CLICKED, (void*)0);
-    
-    lv_obj_t *home_label = lv_label_create(app.home_btn);
-    lv_label_set_text(home_label, "HOME");
-    lv_obj_set_style_text_color(home_label, lv_color_white(), 0);
-	lv_obj_set_style_text_font(home_label, &lv_font_unscii_8, LV_PART_MAIN);
-    lv_obj_center(home_label);
-    
+	app.bottom_nav.container = create_container(app.main_screen, 240, 25, 0, 110, 0, 0, 2,
+						    lv_color_make(0x30, 0x30, 0x30), 1);
+
+	/* Home button */
+	app.bottom_nav.home_btn = create_button_with_label(
+		app.bottom_nav.container, "HOME", 60, 20, 10, 2, 3, lv_color_make(0x00, 0x80, 0xFF),
+		lv_color_white(), &lv_font_unscii_8, nav_btn_event_handler, (void *)0);
 }
 
 /* Update GUI data */
 static void update_gui_data(uint32_t counter)
 {
-    /* Update time */
-    uint32_t seconds = counter / 10;
-    uint32_t minutes = (seconds / 60) % 60;
-    uint32_t hours = (minutes / 60) % 24;
-    lv_label_set_text_fmt(app.time_label, "%02d:%02d", (int)hours, (int)minutes);
-    
-    /* Update sensor data simulation */
-    float temp = 20.0f + (counter % 100) * 0.1f;
-    float humidity = 50.0f + (counter % 50) * 0.8f;
-    int pressure = 1000 + (counter % 50);
-    
-    /* Find and update labels in cards */
-    lv_obj_t *temp_child = lv_obj_get_child(app.temp_card, 0);
-    if (temp_child) {
-        lv_label_set_text_fmt(temp_child, "TEMP\n%.1f°C", (double)temp);
-    }
-    
-    /* Update battery percentage */
-    int battery = 100 - (counter % 100);
-    lv_color_t bat_color = lv_color_make(0x00, 0xFF, 0x00); /* Green */
-    if (battery < 30) bat_color = lv_color_make(0xFF, 0x80, 0x00); /* Orange */
-    if (battery < 15) bat_color = lv_color_make(0xFF, 0x00, 0x00); /* Red */
-    
-    lv_label_set_text_fmt(app.battery_icon, "%d%%", battery);
-    lv_obj_set_style_text_color(app.battery_icon, bat_color, 0);
+	/* Update time */
+	uint32_t seconds = counter / 10;
+	uint32_t minutes = (seconds / 60) % 60;
+	uint32_t hours = (minutes / 60) % 24;
+	lv_label_set_text_fmt(app.status_bar.time_label, "%02d:%02d", (int)hours, (int)minutes);
+
+	/* Update sensor data simulation - 让温度数据更明显地变化 */
+	float temp = 20.0f + (counter % 200) * 0.05f; /* 温度范围20.0-29.95°C，变化更快 */
+
+	/* Update temperature label using saved reference */
+	if (app.content_area.temp_label) {
+		/* 使用整数来避免浮点数格式化问题 */
+		int temp_int = (int)(temp * 10); /* 将温度乘以10转换为整数 */
+		int temp_whole = temp_int / 10;  /* 整数部分 */
+		int temp_frac = temp_int % 10;   /* 小数部分 */
+		lv_label_set_text_fmt(app.content_area.temp_label, "TEMP\n%d.%dC", temp_whole,
+				      temp_frac);
+	}
+
+	/* Update counter display - 实时显示counter值 */
+	if (app.content_area.counter_label) {
+		lv_label_set_text_fmt(app.content_area.counter_label, "COUNT\n%d", (int)counter);
+	}
 }
 
 /* Modern GUI Application with icons and images */
 static int test_modern_gui(const struct device *disp)
 {
-    struct display_capabilities caps;
-    display_get_capabilities(disp, &caps);
-    LOG_INF("GUI Display: %dx%d, pixel format: %d", caps.x_resolution, caps.y_resolution,
-        caps.current_pixel_format);
+	struct display_capabilities caps;
+	display_get_capabilities(disp, &caps);
+	LOG_INF("GUI Display: %dx%d, pixel format: %d", caps.x_resolution, caps.y_resolution,
+		caps.current_pixel_format);
 
-    display_blanking_off(disp);
-    k_msleep(500);
+	display_blanking_off(disp);
+	k_msleep(500);
 
-    /* Initialize application */
-    app.main_screen = lv_screen_active();
-    lv_obj_set_style_bg_color(app.main_screen, lv_color_black(), LV_PART_MAIN);	/* background  Color  */
-    lv_obj_set_style_bg_opa(app.main_screen, LV_OPA_COVER, LV_PART_MAIN);		/* Full background */ 
-    
-    app.current_page = 0;
-    app.last_update = k_uptime_get_32();  	/* Initialize last update time */
+	/* Initialize application */
+	app.main_screen = lv_screen_active();
+	lv_obj_set_style_bg_color(app.main_screen, lv_color_black(),
+				  LV_PART_MAIN); /* background  Color  */
+	lv_obj_set_style_bg_opa(app.main_screen, LV_OPA_COVER, LV_PART_MAIN); /* Full background */
 
-    /* Create GUI components */
-    create_status_bar();
-    create_content_area();
-    create_bottom_navigation();
+	app.state.current_page = 0;
+	app.state.last_update = k_uptime_get_32(); /* Initialize last update time */
+	app.state.initialized = true;
 
-    uint32_t counter = 0;
-    
-    /* Initial refresh */
-    lv_timer_handler();
+	/* Create GUI components */
+	create_status_bar();
+	create_content_area();
+	create_bottom_navigation();
 
-    while (1) {
-        /* Update GUI every second */
-        if (counter % 10 == 0) {
-            update_gui_data(counter);
-        }
-        
-        /* Page-specific updates */
-        switch (app.current_page) {
-        case 0: /* Home page */
-            /* Already handled in update_gui_data */
-            break;
-        case 1: /* Settings page */
-            /* Could add settings-specific updates here */
-            LOG_DBG("Settings page active");
-            break;
-        case 2: /* Info page */
-            /* Could add info-specific updates here */
-            LOG_DBG("Info page active");
-            break;
-        }
+	uint32_t counter = 0;
 
-        counter++;
-        lv_timer_handler();
-        k_msleep(100);
-    }
+	/* Initial refresh */
+	lv_timer_handler();
 
-    return 0;
+	while (1) {
+		/* Update GUI more frequently for better visual feedback */
+		update_gui_data(counter);
+
+		/* Page-specific updates */
+		switch (app.state.current_page) {
+		case 0: /* Home page */
+			/* Already handled in update_gui_data */
+			break;
+		case 1: /* Settings page */
+			/* Could add settings-specific updates here */
+			LOG_DBG("Settings page active");
+			break;
+		case 2: /* Info page */
+			/* Could add info-specific updates here */
+			LOG_DBG("Info page active");
+			break;
+		}
+
+		counter++;
+		lv_timer_handler();
+		k_msleep(100); /* 每100ms更新一次，显示更流畅 */
+	}
+
+	return 0;
 }
 
 int main(void)
