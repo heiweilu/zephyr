@@ -38,6 +38,7 @@ static void async_callback(const struct device *dev, struct uart_event *evt, voi
 		break;
 	case  UART_RX_RDY:
 		uart_async_rx_on_rdy(&sh_uart->async_rx, evt->data.rx.buf, evt->data.rx.len);
+		/* data mirrored by LCD console locally */
 		sh_uart->common.handler(SHELL_TRANSPORT_EVT_RX_RDY, sh_uart->common.context);
 		break;
 	case  UART_RX_BUF_REQUEST:
@@ -91,6 +92,9 @@ static void uart_rx_handle(const struct device *dev, struct shell_uart_int_drive
 			if (rd_len > 0) {
 				new_data = true;
 			}
+			if (rd_len > 0) {
+				 /* data mirrored by LCD console locally */
+			}
 #ifdef CONFIG_MCUMGR_TRANSPORT_SHELL
 			/* Divert bytes from shell handling if it is
 			 * part of an mcumgr frame.
@@ -104,7 +108,7 @@ static void uart_rx_handle(const struct device *dev, struct shell_uart_int_drive
 					data[j] = data[i + j];
 				}
 			}
-#endif /* CONFIG_MCUMGR_TRANSPORT_SHELL */
+	#endif /* CONFIG_MCUMGR_TRANSPORT_SHELL */
 			int err = ring_buf_put_finish(&sh_uart->rx_ringbuf, rd_len);
 			(void)err;
 			__ASSERT_NO_MSG(err == 0);
@@ -366,6 +370,7 @@ static int polling_write(struct shell_uart_common *sh_uart,
 	}
 
 	*cnt = length;
+		/* data mirrored by LCD console locally */
 
 	sh_uart->handler(SHELL_TRANSPORT_EVT_TX_RDY, sh_uart->context);
 
@@ -376,6 +381,9 @@ static int irq_write(struct shell_uart_int_driven *sh_uart,
 		 const void *data, size_t length, size_t *cnt)
 {
 	*cnt = ring_buf_put(&sh_uart->tx_ringbuf, data, length);
+	if (*cnt) {
+		   /* data mirrored by LCD console locally */
+	}
 
 	if (atomic_set(&sh_uart->tx_busy, 1) == 0) {
 		uart_irq_tx_enable(sh_uart->common.dev);
@@ -499,6 +507,9 @@ static void update(const struct shell_transport *transport)
 	 * This is dependent on the fact that `struct shell_uart_common`
 	 * is always the first member, regardless of the UART configuration
 	 */
+	if (err == 0 && *cnt > 0) {
+		lcd_console_mirror_tx_feed(data, *cnt);
+	}
 	struct shell_uart_common *sh_uart = (struct shell_uart_common *)transport->ctx;
 
 	smp_shell_process(&sh_uart->smp);

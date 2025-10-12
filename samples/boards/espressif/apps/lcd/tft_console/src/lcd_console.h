@@ -40,6 +40,13 @@ typedef struct {
     int total_lines;              /* Total lines in buffer */
     bool shell_enabled;           /* Shell interface enabled */
     bool console_enabled;         /* Console output enabled */
+    size_t buffer_len;            /* Current length of console buffer */
+    size_t input_len;             /* Current length of input buffer */
+    enum {
+        LCD_ANSI_IDLE = 0,
+        LCD_ANSI_ESC,
+        LCD_ANSI_CSI
+    } ansi_state;                 /* ANSI escape state tracker */
     
     struct k_mutex buffer_mutex;  /* Buffer access mutex */
 } lcd_console_t;
