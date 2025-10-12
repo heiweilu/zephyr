@@ -1,0 +1,94 @@
+/*
+ *	FT display overlay for ESP32-S3 DevKitC
+ */
+/ {
+	chosen {
+		zephyr,display = &st7789v_tft;
+	};
+
+	aliases {
+		backlight = &tft_backlight;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		status = "okay";
+
+		tft_backlight: tft_backlight {
+			label = "TFT Backlight";
+			gpios = <&gpio1 45 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio1 40 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio1 41 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		st7789v_tft: st7789v_tft@0 {
+			compatible = "sitronix,st7789v";
+			status = "okay";
+
+			/* Also powered by i2c_reg */
+			power-domains = <&i2c_reg>;
+
+			mipi-max-frequency = <DT_FREQ_M(20)>;
+			reg = <0>;
+			width = <240>;
+			height = <135>;
+			x-offset = <40>;
+			y-offset = <52>;
+			vcom = <0x20>;
+			gctrl = <0x35>;
+			vrhs = <0x0b>;
+			vdvs = <0x20>;
+			mdac = <0x68>;
+			gamma = <0x01>;
+			colmod = <0x55>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [70 2C 2E 15 10 09 48 33 53 0B 19 18 20 25];
+			nvgam-param = [70 2C 2E 15 10 09 48 33 53 0B 19 18 20 25];
+			ram-param = [00 F0];
+			rgb-param = [40 02 14];
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+		};
+	};
+
+	/*
+	 *	On-board regulator powers I2C pull-ups and external devices connected
+	 *	via the STEMMA QT connector.
+	 */
+	i2c_reg: i2c_reg {
+		label = "I2C Power";
+		compatible = "power-domain-gpio";
+		#power-domain-cells = <0>;
+		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+	};
+
+};
+
+&spi2 { 
+	status = "okay"; 
+	cs-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>; 
+	pinctrl-0 = <&spi2_pins>; 
+	pinctrl-names = "default"; 
+}; 
+
+&pinctrl { 
+	spi2_pins: spi2_pins { 
+		group1 { 
+			pinmux = <SPIM2_SCLK_GPIO12>; 
+		}; 
+		group2 { 
+			pinmux = <SPIM2_MOSI_GPIO11>; 
+			output-enable; 
+		}; 
+	}; 
+};
