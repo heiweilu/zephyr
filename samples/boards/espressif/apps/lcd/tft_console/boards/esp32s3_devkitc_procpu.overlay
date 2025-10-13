@@ -10,6 +10,8 @@
 		backlight = &tft_backlight;
 	};
 
+	/* USB Host configuration - to be implemented */
+
 	leds {
 		compatible = "gpio-leds";
 		status = "okay";
@@ -92,3 +94,5 @@
 		}; 
 	}; 
 };
+
+/* USB Host configuration - node name needs verification */
