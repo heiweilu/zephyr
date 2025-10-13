@@ -101,6 +101,18 @@ void lcd_console_update_display(void);
  */
 lcd_console_t *lcd_console_get_instance(void);
 
+/**
+ * @brief Deinitialize LCD console and restore original output
+ */
+void lcd_console_deinit(void);
+
+/**
+ * @brief Control redirection modes
+ * @param enable_printk Enable/disable printk redirection to LCD
+ * @param enable_log Enable/disable LOG redirection to LCD
+ */
+void lcd_console_set_redirect_mode(bool enable_printk, bool enable_log);
+
 /* Custom console output hook function */
 int lcd_console_output_hook(int c);
 

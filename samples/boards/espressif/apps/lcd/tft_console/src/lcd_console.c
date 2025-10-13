@@ -16,6 +16,7 @@
 #include <zephyr/logging/log_backend.h>
 #include <zephyr/logging/log_backend_std.h>
 #include <zephyr/logging/log_output.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/printk-hooks.h>
@@ -315,20 +316,25 @@ static void lcd_console_process_queue(void)
 
 int lcd_console_output_hook(int c)
 {
+	/* Skip LCD output if console not ready or disabled */
 	if (!console_initialized || !g_lcd_console.console_enabled) {
+		/* Fall back to original output only if LCD is not ready */
 		if (original_console_out != NULL) {
 			return original_console_out(c);
 		}
 		return c;
 	}
 
+	/* *** LCD重定向模式：不输出到串口，只输出到LCD *** */
 	static char line_buffer[128];
 	static size_t line_pos;
 
+	/* Handle carriage return - ignore */
 	if (c == '\r') {
-		return (original_console_out != NULL) ? original_console_out(c) : c;
+		return c;
 	}
 
+	/* Handle newline - flush buffer and add newline */
 	if (c == '\n') {
 		if (line_pos > 0U) {
 			lcd_console_enqueue(LCD_EVENT_OUTPUT, line_buffer, line_pos);
@@ -336,18 +342,33 @@ int lcd_console_output_hook(int c)
 		}
 		char newline = '\n';
 		lcd_console_enqueue(LCD_EVENT_OUTPUT, &newline, 1U);
+		
+		/* Process queue immediately if not in ISR */
 		if (!k_is_in_isr()) {
 			lcd_console_process_queue();
 		}
-	} else if (isprint((unsigned char)c) && line_pos < ARRAY_SIZE(line_buffer) - 1U) {
+		return c;  /* 返回字符但不传递给原始输出 */
+	}
+
+	/* Handle backspace and delete */
+	if (c == '\b' || (unsigned char)c == 0x7F) {
+		if (line_pos > 0U) {
+			line_pos--;
+		}
+		char backspace = '\b';
+		lcd_console_enqueue(LCD_EVENT_OUTPUT, &backspace, 1U);
+		if (!k_is_in_isr()) {
+			lcd_console_process_queue();
+		}
+		return c;
+	}
+
+	/* Buffer printable characters */
+	if (isprint((unsigned char)c) && line_pos < ARRAY_SIZE(line_buffer) - 1U) {
 		line_buffer[line_pos++] = (char)c;
 	}
 
-	if (original_console_out != NULL) {
-		return original_console_out(c);
-	}
-
-	return c;
+	return c;  /* 不调用原始输出，实现完全重定向 */
 }
 
 int lcd_console_init(lv_obj_t *parent)
@@ -360,21 +381,13 @@ int lcd_console_init(lv_obj_t *parent)
 	k_mutex_init(&g_lcd_console.buffer_mutex);
 	k_msgq_purge(&lcd_console_event_queue);
 
-	g_lcd_console.shell_container = create_container(parent,
-						      240,
-						      135,
-						      0,
-						      0,
-						      0,
-						      2,
-						      lv_color_white(),
-						      2,
-						      lv_color_black(),
-						      1);
+	/* Use the provided parent container directly instead of creating a new full-screen container */
+	g_lcd_console.shell_container = parent;
 
+	/* Create console area to fit within the parent container (240x45) */
 	g_lcd_console.console_area = create_container(g_lcd_console.shell_container,
-						      230,
-						      100,
+						      235,
+						      40,
 						      2,
 						      2,
 						      0,
@@ -386,39 +399,44 @@ int lcd_console_init(lv_obj_t *parent)
 
 	g_lcd_console.console_label = create_label(g_lcd_console.console_area,
 					  "",
-					  -1,
-					  -1,
-					  200,
+					  2,
+					  2,
+					  230,
 					  lv_color_make(0xFF, 0xFF, 0xFF),
 					  &lv_font_unscii_8,
 					  false);
 
-	g_lcd_console.input_area = create_textarea(g_lcd_console.shell_container,
-						 210,
-						 30,
-						 5,
-						 103,
-						 lv_color_make(0x20, 0x20, 0x20),
-						 lv_color_white(),
-						 &lv_font_unscii_8,
-						 "> Enter command...",
-						 true);
+	/* Skip input area for now since space is limited */
+	g_lcd_console.input_area = NULL;
 
+	console_initialized = true;
+
+	/* 首先设置控制台状态 */
 	g_lcd_console.console_enabled = true;
 	g_lcd_console.shell_enabled = true;
 	g_lcd_console.buffer_len = 0U;
 	g_lcd_console.ansi_state = LCD_ANSI_IDLE;
 
 	lcd_console_reset_input();
-	console_initialized = true;
 
+	/* 立即写入初始消息 */
 	lcd_console_write("ESP32-S3 LCD Console\n", strlen("ESP32-S3 LCD Console\n"));
 	lcd_console_write("Shell Ready!\n", strlen("Shell Ready!\n"));
 
+	/* Setup printk redirection */
 	original_console_out = __printk_get_hook();
 	__printk_hook_install(lcd_console_output_hook);
 
+#if defined(CONFIG_LOG)
+	/* Enable LOG backend for LCD console */
+	log_backend_enable(&log_backend_lcd_console, NULL, LOG_LEVEL_DBG);
+#endif
+
+	/* 强制处理队列确保消息显示 */
+	lcd_console_process_queue();
+
 	LOG_INF("LCD Console initialized successfully");
+	LOG_INF("All console output redirected to LCD");
 
 	return 0;
 }
@@ -539,6 +557,53 @@ void lcd_console_update_display(void)
 lcd_console_t *lcd_console_get_instance(void)
 {
 	return console_initialized ? &g_lcd_console : NULL;
+}
+
+void lcd_console_deinit(void)
+{
+	if (!console_initialized) {
+		return;
+	}
+
+	/* Restore original printk hook */
+	if (original_console_out != NULL) {
+		__printk_hook_install(original_console_out);
+		original_console_out = NULL;
+	}
+
+#if defined(CONFIG_LOG)
+	/* Disable LCD LOG backend */
+	log_backend_disable(&log_backend_lcd_console);
+#endif
+
+	console_initialized = false;
+	
+	LOG_INF("LCD Console deinitialized");
+}
+
+void lcd_console_set_redirect_mode(bool enable_printk, bool enable_log)
+{
+	if (!console_initialized) {
+		return;
+	}
+
+	/* Control printk redirection */
+	if (enable_printk && original_console_out == NULL) {
+		original_console_out = __printk_get_hook();
+		__printk_hook_install(lcd_console_output_hook);
+	} else if (!enable_printk && original_console_out != NULL) {
+		__printk_hook_install(original_console_out);
+		original_console_out = NULL;
+	}
+
+#if defined(CONFIG_LOG)
+	/* Control LOG redirection */
+	if (enable_log) {
+		log_backend_enable(&log_backend_lcd_console, NULL, LOG_LEVEL_DBG);
+	} else {
+		log_backend_disable(&log_backend_lcd_console);
+	}
+#endif
 }
 
 #if defined(CONFIG_LCD_CONSOLE_MIRROR)
