@@ -10,8 +10,20 @@
 #include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/printk.h>
 
 LOG_MODULE_REGISTER(lcd_shell_backend, LOG_LEVEL_INF);
+
+/* Configuration/limits for lcd shell backend
+ * REPEAT_THRESHOLD: number of consecutive identical printable characters
+ * allowed in the local input buffer before additional repeats are ignored.
+ * This is a defensive measure to mitigate spurious repeated bytes that may
+ * arrive from fragmented output or terminal noise. Make it a macro so it can
+ * be turned into a Kconfig option later if desired.
+ */
+#ifndef REPEAT_THRESHOLD
+#define REPEAT_THRESHOLD 3
+#endif
 
 static lcd_shell_output_cb_t output_callback = NULL;
 
@@ -19,6 +31,14 @@ static lcd_shell_output_cb_t output_callback = NULL;
 #define SHELL_INPUT_BUFFER_SIZE 256
 static char shell_input_buffer[SHELL_INPUT_BUFFER_SIZE];
 static size_t shell_input_pos = 0;
+
+/* Single latest-message buffer protected by a mutex to avoid queue flooding.
+ * Format: [type(1)] [payload NUL-terminated up to SHELL_INPUT_BUFFER_SIZE]
+ */
+#define INPUT_MSG_SIZE (1 + SHELL_INPUT_BUFFER_SIZE)
+static char latest_msg[INPUT_MSG_SIZE];
+static struct k_mutex latest_msg_lock;
+static bool latest_msg_valid = false;
 
 /* Shell output function */
 static int shell_lcd_write(const struct shell_transport *transport,
@@ -28,7 +48,7 @@ static int shell_lcd_write(const struct shell_transport *transport,
     
     if (output_callback && data && length > 0) {
         output_callback((const char *)data, length);
-        LOG_INF("LCD backend captured %zu bytes", length);
+        /* keep this silent to avoid flooding logs */
     }
     
     *cnt = length;
@@ -100,6 +120,10 @@ int lcd_shell_backend_init(void)
 {
     shell_input_pos = 0;
     memset(shell_input_buffer, 0, sizeof(shell_input_buffer));
+    /* Initialize mutex and clear latest message */
+    k_mutex_init(&latest_msg_lock);
+    memset(latest_msg, 0, sizeof(latest_msg));
+    latest_msg_valid = false;
     
     return 0;
 }
@@ -114,57 +138,111 @@ void lcd_shell_send_input(const char *input, size_t len)
     if (!input || len == 0) {
         return;
     }
+    /* Debug: print raw incoming bytes for troubleshooting Enter behavior */
+    /* incoming input update (kept quiet in normal runs) */
     
     for (size_t i = 0; i < len; i++) {
         char ch = input[i];
-        
         if (ch == '\b' || ch == 127) { /* Backspace */
             if (shell_input_pos > 0) {
                 shell_input_pos--;
                 shell_input_buffer[shell_input_pos] = '\0';
-                
-                /* Echo backspace to display */
-                if (output_callback) {
-                    output_callback("\b \b", 3);
-                }
             }
         } else if (ch == '\n' || ch == '\r') { /* Enter */
-            shell_input_buffer[shell_input_pos] = '\0';
-            
-            /* Echo newline */
-            if (output_callback) {
-                output_callback("\n", 1);
+            /* When Enter is received, enqueue an ENTER message to clear display */
+            LOG_DBG("lcd_backend: ENTER received; clearing input buffer");
+            {
+                char msg[INPUT_MSG_SIZE];
+                msg[0] = (char)MSG_TYPE_ENTER;
+                memset(&msg[1], 0, INPUT_MSG_SIZE - 1);
+                /* Overwrite latest_msg atomically */
+                k_mutex_lock(&latest_msg_lock, K_FOREVER);
+                memcpy(latest_msg, msg, INPUT_MSG_SIZE);
+                latest_msg_valid = true;
+                k_mutex_unlock(&latest_msg_lock);
             }
-            
-            /* Execute command */
-            if (shell_input_pos > 0) {
-                shell_execute_cmd(&lcd_shell, shell_input_buffer);
-            } else {
-                /* Empty command, just show prompt */
-                if (output_callback) {
-                    output_callback("esp32s3:~$ ", 11);
-                }
-            }
-            
-            /* Clear input buffer */
+            /* clear local buffer for future typing */
             shell_input_pos = 0;
             memset(shell_input_buffer, 0, sizeof(shell_input_buffer));
-            
         } else if (ch >= 32 && ch <= 126) { /* Printable characters */
-            if (shell_input_pos < sizeof(shell_input_buffer) - 1) {
-                shell_input_buffer[shell_input_pos++] = ch;
-                
-                /* Echo character */
-                if (output_callback) {
-                    output_callback(&ch, 1);
+            /* Protect against spurious repeated characters (e.g., 'mmm')
+             * seen intermittently: only allow up to REPEAT_THRESHOLD
+             * consecutive identical printable characters.
+             */
+            /* Use macro so threshold is configurable */
+            const int REPEAT_THRESHOLD_LOCAL = REPEAT_THRESHOLD;
+            bool allow = true;
+            if (shell_input_pos > 0 && shell_input_pos >= REPEAT_THRESHOLD_LOCAL) {
+                bool all_same = true;
+                for (int r = 1; r <= REPEAT_THRESHOLD_LOCAL; r++) {
+                    if (shell_input_buffer[shell_input_pos - r] != ch) { all_same = false; break; }
                 }
+                if (all_same) allow = false;
+            }
+            if (allow && shell_input_pos < sizeof(shell_input_buffer) - 1) {
+                shell_input_buffer[shell_input_pos++] = ch;
+            }
+            else if (!allow) {
+                /* Log suppressed repeat pattern for debugging (limited) */
+                char hex[3 * 64 + 1] = {0};
+                size_t hd = (shell_input_pos < 64) ? shell_input_pos : 64;
+                for (size_t hi = 0; hi < hd; hi++) {
+                    int off = (int)strlen(hex);
+                    snprintf(&hex[off], sizeof(hex) - off, "%02X ", (uint8_t)shell_input_buffer[hi]);
+                }
+                LOG_DBG("lcd_backend: suppressed repeat char '%c' local buffer='%s' len=%zu hex=%s", ch, shell_input_buffer, shell_input_pos, hex);
             }
         }
     }
+    /* Enqueue input-only update (MSG_TYPE_INPUT) for main loop to consume.
+     * This avoids calling display callbacks directly from the shell thread.
+     */
+    {
+        char msg[INPUT_MSG_SIZE];
+        msg[0] = (char)MSG_TYPE_INPUT;
+        size_t input_len = strlen(shell_input_buffer);
+        if (input_len > SHELL_INPUT_BUFFER_SIZE - 1) input_len = SHELL_INPUT_BUFFER_SIZE - 1;
+        memset(&msg[1], 0, INPUT_MSG_SIZE - 1);
+        memcpy(&msg[1], shell_input_buffer, input_len);
+        /* Overwrite latest_msg atomically (no queue flooding) */
+        k_mutex_lock(&latest_msg_lock, K_FOREVER);
+        memcpy(latest_msg, msg, INPUT_MSG_SIZE);
+        latest_msg_valid = true;
+        k_mutex_unlock(&latest_msg_lock);
+        LOG_DBG("lcd_backend: latest input update len=%zu stored", input_len);
+    }
+}
+
+/**
+ * Try to pop an input update message from backend queue. Returns length of
+ * input (0 if empty). out_buf will be NUL-terminated.
+ */
+int lcd_shell_try_get_input(uint8_t *out_type, char *out_buf, size_t max_len)
+{
+    if (out_type) *out_type = 0;
+    if (!out_buf || max_len == 0) return 0;
+    /* Atomically read and clear latest_msg if present */
+    k_mutex_lock(&latest_msg_lock, K_NO_WAIT);
+    if (!latest_msg_valid) {
+        k_mutex_unlock(&latest_msg_lock);
+        if (out_type) *out_type = 0;
+        out_buf[0] = '\0';
+        return 0;
+    }
+    /* copy out and clear valid flag */
+    uint8_t type = (uint8_t)latest_msg[0];
+    size_t in_len = strnlen(&latest_msg[1], INPUT_MSG_SIZE - 1);
+    size_t copy = (in_len < max_len - 1) ? in_len : (max_len - 1);
+    if (copy > 0) memcpy(out_buf, &latest_msg[1], copy);
+    out_buf[copy] = '\0';
+    latest_msg_valid = false;
+    k_mutex_unlock(&latest_msg_lock);
+    if (out_type) *out_type = type;
+    return (int)copy;
 }
 
 void lcd_shell_set_output_callback(lcd_shell_output_cb_t callback)
 {
     output_callback = callback;
-    LOG_INF("Shell output callback set");
+    LOG_DBG("Shell output callback set");
 }

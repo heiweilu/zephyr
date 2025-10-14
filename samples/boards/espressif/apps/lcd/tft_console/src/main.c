@@ -18,6 +18,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include "lvgl_wrapper.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -85,6 +86,11 @@ static gui_app_t app = {0};
 static char shell_display_buffer[SHELL_DISPLAY_BUFFER_SIZE] = {0};
 static size_t shell_display_len = 0;
 
+/* Current input line received from backend (real-time) */
+#define CURRENT_INPUT_LINE_SIZE 256
+static char current_input_line[CURRENT_INPUT_LINE_SIZE] = {0};
+static size_t current_input_len = 0;
+
 /* Display update tracking */
 static bool display_update_needed = false;
 
@@ -107,13 +113,29 @@ static void shell_output_callback(const char *data, size_t len)
 	if (!data || len == 0) {
 		return;
 	}
-	
+	/* Special-case: backend may send input-only updates prefixed with 0x1F (unit separator)
+	 * Format: 0x1F <input bytes...>
+	 * When detected, update current_input_line immediately and return.
+	 */
+	if (len > 0 && (uint8_t)data[0] == 0x1F) {
+		size_t copy_len = len - 1;
+		if (copy_len >= CURRENT_INPUT_LINE_SIZE) {
+			copy_len = CURRENT_INPUT_LINE_SIZE - 1;
+		}
+		memcpy(current_input_line, data + 1, copy_len);
+		current_input_line[copy_len] = '\0';
+		current_input_len = copy_len;
+		display_update_needed = true;
+		LOG_INF("main: received input update len=%zu content='%s'", copy_len, current_input_line);
+		return;
+	}
+
 	/* Process data with ANSI escape sequence filtering */
 	ansi_state_t state = ANSI_NORMAL;
-	
+
 	for (size_t i = 0; i < len && shell_display_len < sizeof(shell_display_buffer) - 1; i++) {
 		char c = data[i];
-		
+
 		switch (state) {
 		case ANSI_NORMAL:
 			if (c == 0x1B) { /* ESC */
@@ -131,7 +153,7 @@ static void shell_output_callback(const char *data, size_t len)
 				shell_display_buffer[shell_display_len++] = c;
 			}
 			break;
-			
+
 		case ANSI_ESCAPE:
 			if (c == '[') {
 				state = ANSI_CSI; /* Control Sequence Introducer */
@@ -144,7 +166,7 @@ static void shell_output_callback(const char *data, size_t len)
 				state = ANSI_NORMAL;
 			}
 			break;
-			
+
 		case ANSI_CSI:
 			if (c >= 0x30 && c <= 0x3F) {
 				/* Parameter characters */
@@ -160,7 +182,7 @@ static void shell_output_callback(const char *data, size_t len)
 				state = ANSI_NORMAL;
 			}
 			break;
-			
+
 		case ANSI_CSI_PARAM:
 			if (c >= 0x30 && c <= 0x3F) {
 				/* More parameter characters */
@@ -175,7 +197,7 @@ static void shell_output_callback(const char *data, size_t len)
 				state = ANSI_NORMAL;
 			}
 			break;
-			
+
 		case ANSI_CSI_INTER:
 			if (c >= 0x20 && c <= 0x2F) {
 				/* More intermediate characters */
@@ -187,7 +209,7 @@ static void shell_output_callback(const char *data, size_t len)
 				state = ANSI_NORMAL;
 			}
 			break;
-			
+
 		case ANSI_OSC:
 			if (c == 0x1B) {
 				/* ESC might be the start of OSC terminator */
@@ -195,7 +217,7 @@ static void shell_output_callback(const char *data, size_t len)
 			}
 			/* OSC sequences can be long, just wait for terminator */
 			break;
-			
+
 		case ANSI_OSC_ESC:
 			if (c == '\\') {
 				/* OSC terminated, back to normal */
@@ -205,7 +227,7 @@ static void shell_output_callback(const char *data, size_t len)
 				state = ANSI_OSC;
 			}
 			break;
-			
+
 		case ANSI_SS:
 			/* Single Shift, consume one character */
 			state = ANSI_NORMAL;
@@ -235,6 +257,21 @@ static bool shell_capture_active = false;
 /* Transport write function interception */
 static int (*original_uart_write)(const struct shell_transport *transport, 
                                   const void *data, size_t length, size_t *cnt) = NULL;
+/* Transport read function interception (to capture input bytes) */
+static int (*original_uart_read)(const struct shell_transport *transport,
+								 void *data, size_t length, size_t *cnt) = NULL;
+
+/* Small buffer to remember last intercepted read (to avoid echo duplication)
+ * We store recent user-typed bytes and a timestamp. If the next write from
+ * the shell is simply an echo of those bytes, we skip forwarding that echo
+ * to the input handler. If the write contains echo + completion suffix,
+ * we strip the echoed prefix and forward only the suffix.
+ */
+#define LAST_READ_BUF_SIZE 32
+#define ECHO_WINDOW_MS 200
+static uint8_t last_read_buf[LAST_READ_BUF_SIZE];
+static size_t last_read_len = 0;
+static uint32_t last_read_ts = 0;
 
 /* Intercepted UART transport write function */
 static int intercepted_uart_write(const struct shell_transport *transport, 
@@ -246,7 +283,8 @@ static int intercepted_uart_write(const struct shell_transport *transport,
 		
 		/* Filter out LOG messages to avoid infinite recursion */
 		if (length < 20 || strncmp(str, "[00:", 4) != 0) {
-			/* This is not a LOG message, forward to LCD */
+			/* Only forward to output callback, do NOT treat writes as input
+			 * to avoid duplicate character issues */
 			shell_output_callback(str, length);
 		}
 	}
@@ -415,6 +453,10 @@ SHELL_CMD_REGISTER(sysinfo, NULL, "Show system information", cmd_system_info);
 SHELL_CMD_REGISTER(clear, NULL, "", cmd_lcd_clear);
 SHELL_CMD_REGISTER(demo, NULL, "Run demo sequence", cmd_demo);
 
+/* Forward declaration for intercepted read function (definition after main) */
+static int intercepted_uart_read(const struct shell_transport *transport,
+								 void *data, size_t length, size_t *cnt);
+
 int main(void)
 {
 	int ret;
@@ -446,6 +488,9 @@ int main(void)
 		struct shell_transport_api *api = (struct shell_transport_api *)default_shell->iface->api;
 		original_uart_write = api->write;
 		api->write = intercepted_uart_write;
+		/* Replace read as well to capture input bytes */
+		original_uart_read = api->read;
+		api->read = intercepted_uart_read;
 	} else {
 		LOG_WRN("Could not hook into UART shell transport");
 	}
@@ -458,11 +503,111 @@ int main(void)
 	while (1) {
 		/* Handle LVGL tasks */
 		lv_timer_handler();
+
+		/* Consume any backend input updates from message queue (non-blocking) */
+		{
+			uint8_t msg_type = 0;
+			char inbuf[CURRENT_INPUT_LINE_SIZE];
+			int got = 0;
+			while ((got = lcd_shell_try_get_input(&msg_type, inbuf, sizeof(inbuf))) >= 0) {
+				if (got == 0 && msg_type == 0) break; /* no more messages */
+				if (msg_type == MSG_TYPE_INPUT) {
+					/* Update current input line for rendering */
+					size_t copy_len = (got < CURRENT_INPUT_LINE_SIZE - 1) ? (size_t)got : (CURRENT_INPUT_LINE_SIZE - 1);
+					memcpy(current_input_line, inbuf, copy_len);
+					current_input_line[copy_len] = '\0';
+					current_input_len = copy_len;
+					display_update_needed = true;
+				} else if (msg_type == MSG_TYPE_ENTER) {
+					/* Clear any pending typed text shown at prompt area.
+					 * Remove the trailing partial line (prompt + typed)
+					 * from shell_display_buffer so console shows only output.
+					 */
+					/* Find last newline in shell_display_buffer */
+					ssize_t last_nl = -1;
+					for (ssize_t i = (ssize_t)shell_display_len - 1; i >= 0; i--) {
+						if (shell_display_buffer[i] == '\n') { last_nl = i; break; }
+					}
+					if (last_nl >= 0) {
+						/* keep up to and including last_nl */
+						shell_display_len = (size_t)last_nl + 1;
+						shell_display_buffer[shell_display_len] = '\0';
+					} else {
+						/* No newline, clear whole buffer */
+						shell_display_len = 0;
+						shell_display_buffer[0] = '\0';
+					}
+					/* Also clear the current input line displayed */
+					current_input_len = 0;
+					current_input_line[0] = '\0';
+					display_update_needed = true;
+				}
+			}
+		}
 		
 		/* High priority: Check for display update immediately */
 		if (display_update_needed && app.console_label) {
-			lv_label_set_text(app.console_label, shell_display_buffer);
+			/* 如果有当前输入行，把它临时附加到显示缓冲的末尾用于渲染 */
+			char tmp_buf[SHELL_DISPLAY_BUFFER_SIZE + CURRENT_INPUT_LINE_SIZE];
+			/* Build tmp_buf by copying shell_display_buffer but replace the trailing
+			 * partial line (after last '\n') with current_input_line so edits are
+			 * immediately visible where the prompt/input sits.
+			 */
+			size_t base_len = 0;
+			/* Find last newline in shell_display_buffer */
+			ssize_t last_nl = -1;
+			for (ssize_t i = (ssize_t)shell_display_len - 1; i >= 0; i--) {
+				if (shell_display_buffer[i] == '\n') { last_nl = i; break; }
+			}
+			if (last_nl >= 0) {
+				/* Keep up to and including the last newline */
+				base_len = (size_t)last_nl + 1;
+			} else {
+				/* No newline found: drop any trailing partial content and start fresh */
+				base_len = 0;
+			}
+			if (base_len > sizeof(tmp_buf) - 1) base_len = sizeof(tmp_buf) - 1;
+			memcpy(tmp_buf, shell_display_buffer, base_len);
+			/* Append prompt and current input line after the last newline */
+			const char *prompt = "s3:~$ ";
+			size_t prompt_len = strlen(prompt);
+			/* Ensure prompt fits */
+			size_t copy_len = prompt_len + current_input_len;
+			if (base_len + copy_len >= sizeof(tmp_buf) - 1) {
+				copy_len = sizeof(tmp_buf) - 1 - base_len;
+			}
+			if (copy_len > 0) {
+				/* Copy prompt then input (truncated to fit) */
+				size_t to_copy_prompt = prompt_len;
+				if (to_copy_prompt > sizeof(tmp_buf) - 1 - base_len) {
+					to_copy_prompt = sizeof(tmp_buf) - 1 - base_len;
+				}
+				memcpy(tmp_buf + base_len, prompt, to_copy_prompt);
+				base_len += to_copy_prompt;
+				/* Copy input content after prompt */
+				size_t avail = sizeof(tmp_buf) - 1 - base_len;
+				size_t to_copy_input = current_input_len;
+				if (to_copy_input > avail) to_copy_input = avail;
+				if (to_copy_input > 0) {
+					memcpy(tmp_buf + base_len, current_input_line, to_copy_input);
+					base_len += to_copy_input;
+				}
+			}
+			tmp_buf[base_len] = '\0';
+			lv_label_set_text(app.console_label, tmp_buf);
 			lv_obj_scroll_to_y(app.console_label, LV_COORD_MAX, LV_ANIM_OFF);
+			/* Also update status label with current input for quick visual debug */
+			if (app.status_label) {
+				char in_dbg[512];
+				if (current_input_len > 0) {
+					snprintk(in_dbg, sizeof(in_dbg), "in:%s", current_input_line);
+				} else {
+					snprintk(in_dbg, sizeof(in_dbg), "in:");
+				}
+				lv_label_set_text(app.status_label, in_dbg);
+				lv_obj_invalidate(app.status_label);
+			}
+			lv_obj_invalidate(app.console_label);
 			display_update_needed = false;
 			
 		}
@@ -493,3 +638,27 @@ int main(void)
 
 	return 0;
 }
+
+static int intercepted_uart_read(const struct shell_transport *transport,
+								 void *data, size_t length, size_t *cnt)
+{
+	int ret = 0;
+	/* Call original read to let shell consume data as usual */
+	if (original_uart_read) {
+		ret = original_uart_read(transport, data, length, cnt);
+	} else {
+		*cnt = 0;
+		ret = 0;
+	}
+
+	/* If shell_capture_active and we received input bytes, forward to lcd backend input handler */
+	if (shell_capture_active && data && cnt && *cnt > 0) {
+		/* Log and forward to backend to update LCD input line */
+		LOG_DBG("intercepted read: got %zu bytes", *cnt);
+		lcd_shell_send_input((const char *)data, *cnt);
+	}
+
+	return ret;
+}
+
+/* intercepted_uart_read is defined below */
