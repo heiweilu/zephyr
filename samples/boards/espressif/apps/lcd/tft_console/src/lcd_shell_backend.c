@@ -138,8 +138,18 @@ void lcd_shell_send_input(const char *input, size_t len)
     if (!input || len == 0) {
         return;
     }
-    /* Debug: print raw incoming bytes for troubleshooting Enter behavior */
-    /* incoming input update (kept quiet in normal runs) */
+    
+    /* Debug: Log raw incoming bytes with hex dump - use printk to avoid recursion */
+    #if 0  /* Disable - "mmm" issue resolved */
+    if (len > 0 && len <= 4) {  /* Only log short sequences like Enter key */
+        char hex[128] = {0};
+        for (size_t i = 0; i < len; i++) {
+            int off = strlen(hex);
+            snprintf(&hex[off], sizeof(hex) - off, "%02X ", (uint8_t)input[i]);
+        }
+        printk("[BACKEND_IN] len=%zu hex=[%s]\n", len, hex);
+    }
+    #endif
     
     for (size_t i = 0; i < len; i++) {
         char ch = input[i];
@@ -148,6 +158,13 @@ void lcd_shell_send_input(const char *input, size_t len)
                 shell_input_pos--;
                 shell_input_buffer[shell_input_pos] = '\0';
             }
+        } else if (ch == '\t') { /* Tab - ignore, shell will handle completion */
+            /* Tab completion is handled by shell itself.
+             * The completed text will come back as write output which
+             * we'll capture through the intercepted_uart_write.
+             * Don't add tab to the input buffer.
+             */
+            LOG_DBG("lcd_backend: TAB received (completion request)");
         } else if (ch == '\n' || ch == '\r') { /* Enter */
             /* When Enter is received, enqueue an ENTER message to clear display */
             LOG_DBG("lcd_backend: ENTER received; clearing input buffer");
