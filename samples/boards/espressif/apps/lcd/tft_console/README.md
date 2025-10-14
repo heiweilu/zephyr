@@ -4,7 +4,7 @@
 
 A complete LCD console interface running on ESP32-S3 DevKit with Zephyr RTOS and LVGL, featuring real-time shell command display.
 
-绿色字体在黑色背景上，经典终端风格
+白色字体在黑色背景上，经典终端风格
 
 ## ✨ Features240x135像素全屏控制台显示
 

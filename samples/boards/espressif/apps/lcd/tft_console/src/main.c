@@ -88,6 +88,19 @@ static size_t shell_display_len = 0;
 /* Display update tracking */
 static bool display_update_needed = false;
 
+/* State machine for ANSI escape sequence filtering */
+typedef enum {
+	ANSI_NORMAL,      /* Normal text */
+	ANSI_ESCAPE,      /* Just read ESC character */
+	ANSI_CSI,         /* Control Sequence Introducer */
+	ANSI_CSI_PARAM,   /* CSI parameters */
+	ANSI_CSI_INTER,   /* CSI intermediate characters */
+	ANSI_CSI_FINAL,   /* CSI final character */
+	ANSI_OSC,         /* Operating System Command */
+	ANSI_OSC_ESC,     /* OSC waiting for final terminator */
+	ANSI_SS,          /* Single Shift */
+} ansi_state_t;
+
 /* Shell output callback - called when shell produces output */
 static void shell_output_callback(const char *data, size_t len)
 {
@@ -95,14 +108,111 @@ static void shell_output_callback(const char *data, size_t len)
 		return;
 	}
 	
-	/* Simple buffer update (single threaded for now) */
+	/* Process data with ANSI escape sequence filtering */
+	ansi_state_t state = ANSI_NORMAL;
+	
 	for (size_t i = 0; i < len && shell_display_len < sizeof(shell_display_buffer) - 1; i++) {
-		if (data[i] == '\n') {
-			shell_display_buffer[shell_display_len++] = '\n';
-		} else if (data[i] >= 32 || data[i] == '\t') {
-			shell_display_buffer[shell_display_len++] = data[i];
+		char c = data[i];
+		
+		switch (state) {
+		case ANSI_NORMAL:
+			if (c == 0x1B) { /* ESC */
+				state = ANSI_ESCAPE;
+			} else if (c == '\n') {
+				shell_display_buffer[shell_display_len++] = '\n';
+			} else if (c == '\b') {
+				/* Handle backspace */
+				if (shell_display_len > 0) {
+					shell_display_len--;
+				}
+			} else if (c == '\r') {
+				/* Ignore carriage return */
+			} else if (c >= 32 || c == '\t') {
+				shell_display_buffer[shell_display_len++] = c;
+			}
+			break;
+			
+		case ANSI_ESCAPE:
+			if (c == '[') {
+				state = ANSI_CSI; /* Control Sequence Introducer */
+			} else if (c == ']') {
+				state = ANSI_OSC; /* Operating System Command */
+			} else if (c == 'N' || c == 'O') {
+				state = ANSI_SS; /* Single Shift */
+			} else {
+				/* Other ESC sequences, just go back to normal */
+				state = ANSI_NORMAL;
+			}
+			break;
+			
+		case ANSI_CSI:
+			if (c >= 0x30 && c <= 0x3F) {
+				/* Parameter characters */
+				state = ANSI_CSI_PARAM;
+			} else if (c >= 0x20 && c <= 0x2F) {
+				/* Intermediate characters */
+				state = ANSI_CSI_INTER;
+			} else if (c >= 0x40 && c <= 0x7E) {
+				/* Final character, end of sequence */
+				state = ANSI_NORMAL;
+			} else {
+				/* Invalid character, back to normal */
+				state = ANSI_NORMAL;
+			}
+			break;
+			
+		case ANSI_CSI_PARAM:
+			if (c >= 0x30 && c <= 0x3F) {
+				/* More parameter characters */
+			} else if (c >= 0x20 && c <= 0x2F) {
+				/* Intermediate characters */
+				state = ANSI_CSI_INTER;
+			} else if (c >= 0x40 && c <= 0x7E) {
+				/* Final character, end of sequence */
+				state = ANSI_NORMAL;
+			} else {
+				/* Invalid character, back to normal */
+				state = ANSI_NORMAL;
+			}
+			break;
+			
+		case ANSI_CSI_INTER:
+			if (c >= 0x20 && c <= 0x2F) {
+				/* More intermediate characters */
+			} else if (c >= 0x40 && c <= 0x7E) {
+				/* Final character, end of sequence */
+				state = ANSI_NORMAL;
+			} else {
+				/* Invalid character, back to normal */
+				state = ANSI_NORMAL;
+			}
+			break;
+			
+		case ANSI_OSC:
+			if (c == 0x1B) {
+				/* ESC might be the start of OSC terminator */
+				state = ANSI_OSC_ESC;
+			}
+			/* OSC sequences can be long, just wait for terminator */
+			break;
+			
+		case ANSI_OSC_ESC:
+			if (c == '\\') {
+				/* OSC terminated, back to normal */
+				state = ANSI_NORMAL;
+			} else {
+				/* Not terminator, go back to OSC */
+				state = ANSI_OSC;
+			}
+			break;
+			
+		case ANSI_SS:
+			/* Single Shift, consume one character */
+			state = ANSI_NORMAL;
+			break;
 		}
 	}
+	
 	shell_display_buffer[shell_display_len] = '\0';
 	
 	/* Keep only last ~1500 chars to prevent overflow */
@@ -264,7 +374,7 @@ static int cmd_lcd_clear(const struct shell *sh, size_t argc, char **argv)
 	
 	/* Clear display buffer */
 	shell_display_len = 0;
-	strcpy(shell_display_buffer, "esp32s3:~$ ");
+	strcpy(shell_display_buffer, "");
 	shell_display_len = strlen(shell_display_buffer);
 	
 	if (app.console_label) {
@@ -272,7 +382,7 @@ static int cmd_lcd_clear(const struct shell *sh, size_t argc, char **argv)
 		lv_obj_invalidate(app.console_label);
 	}
 	
-	shell_print(sh, "Console cleared");
+	// shell_print(sh, "Console cleared");
 	
 	return 0;
 }
@@ -302,7 +412,7 @@ static int cmd_demo(const struct shell *sh, size_t argc, char **argv)
 
 /* Register shell commands */
 SHELL_CMD_REGISTER(sysinfo, NULL, "Show system information", cmd_system_info);
-SHELL_CMD_REGISTER(clear, NULL, "Clear console", cmd_lcd_clear);
+SHELL_CMD_REGISTER(clear, NULL, "", cmd_lcd_clear);
 SHELL_CMD_REGISTER(demo, NULL, "Run demo sequence", cmd_demo);
 
 int main(void)

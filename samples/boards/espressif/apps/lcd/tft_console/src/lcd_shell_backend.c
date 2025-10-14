@@ -93,7 +93,7 @@ static struct shell_transport shell_lcd_transport = {
 };
 
 /* Shell instance */
-SHELL_DEFINE(lcd_shell, "esp32s3:~$ ", &shell_lcd_transport, 10,
+SHELL_DEFINE(lcd_shell, "s3:~$ ", &shell_lcd_transport, 10,
              SHELL_FLAG_OLF_CRLF, 1024);
 
 int lcd_shell_backend_init(void)
@@ -101,7 +101,6 @@ int lcd_shell_backend_init(void)
     shell_input_pos = 0;
     memset(shell_input_buffer, 0, sizeof(shell_input_buffer));
     
-    LOG_INF("LCD Shell backend initialized");
     return 0;
 }
 
