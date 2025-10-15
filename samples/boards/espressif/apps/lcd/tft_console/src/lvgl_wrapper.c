@@ -14,8 +14,10 @@ LV_FONT_DECLARE(lv_font_unscii_8)
  * LVGL控件封装函数实现v0.2
  * ======================================== */
 
-lv_obj_t *create_container(lv_obj_t *parent, int32_t  width, int32_t  height, int32_t  pos_x, int32_t  pos_y, int32_t  radius_value, 
-				int32_t  border_width, lv_color_t border_color, int32_t  pad, lv_color_t bg_color, int32_t  main_flag)
+lv_obj_t *create_container(lv_obj_t *parent, int32_t width, int32_t height, int32_t pos_x,
+			   int32_t pos_y, int32_t radius_value, int32_t border_width,
+			   lv_color_t border_color, int32_t pad, lv_color_t bg_color,
+			   int32_t main_flag)
 {
 	lv_obj_t *area = lv_obj_create(parent);
 	lv_obj_set_size(area, width, height);
@@ -32,8 +34,9 @@ lv_obj_t *create_container(lv_obj_t *parent, int32_t  width, int32_t  height, in
 	return area;
 }
 
-lv_obj_t *create_button(lv_obj_t *parent, int32_t  width, int32_t  height, int32_t  pos_x, int32_t  pos_y, int32_t  radius,
-			lv_color_t bg_color, lv_event_cb_t event_cb, void *user_data)
+lv_obj_t *create_button(lv_obj_t *parent, int32_t width, int32_t height, int32_t pos_x,
+			int32_t pos_y, int32_t radius, lv_color_t bg_color, lv_event_cb_t event_cb,
+			void *user_data)
 {
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_size(btn, width, height);
@@ -48,8 +51,9 @@ lv_obj_t *create_button(lv_obj_t *parent, int32_t  width, int32_t  height, int32
 	return btn;
 }
 
-lv_obj_t *create_label(lv_obj_t *parent, const char *text, int32_t  pos_x, int32_t  pos_y,
-		       int32_t text_width, lv_color_t text_color, const lv_font_t *font, bool center)
+lv_obj_t *create_label(lv_obj_t *parent, const char *text, int32_t pos_x, int32_t pos_y,
+		       int32_t text_width, lv_color_t text_color, const lv_font_t *font,
+		       bool center)
 {
 	lv_obj_t *label = lv_label_create(parent);
 	lv_label_set_text(label, text);
@@ -73,26 +77,19 @@ lv_obj_t *create_label(lv_obj_t *parent, const char *text, int32_t  pos_x, int32
 	return label;
 }
 
-lv_obj_t *create_button_with_label(lv_obj_t *parent, const char *text, int32_t  width, int32_t  height,
-				   int32_t  pos_x, int32_t  pos_y, int32_t  radius, lv_color_t bg_color,
-				   lv_color_t text_color, const lv_font_t *font,
-				   lv_event_cb_t event_cb, void *user_data)
+lv_obj_t *create_button_with_label(lv_obj_t *parent, const char *text, int32_t width,
+				   int32_t height, int32_t pos_x, int32_t pos_y, int32_t radius,
+				   lv_color_t bg_color, lv_color_t text_color,
+				   const lv_font_t *font, lv_event_cb_t event_cb, void *user_data)
 {
 	lv_obj_t *btn = create_button(parent, width, height, pos_x, pos_y, radius, bg_color,
 				      event_cb, user_data);
-	create_label(btn, 
-		text, 
-		0, 
-		0, 
-		-1,
-		text_color, 
-		font, 
-		true);
+	create_label(btn, text, 0, 0, -1, text_color, font, true);
 	return btn;
 }
 
-lv_obj_t *create_icon(lv_obj_t *parent, const uint16_t *icon_data, int32_t  pos_x, int32_t  pos_y, int32_t  size,
-		      lv_color_t color, const char *label_text)
+lv_obj_t *create_icon(lv_obj_t *parent, const uint16_t *icon_data, int32_t pos_x, int32_t pos_y,
+		      int32_t size, lv_color_t color, const char *label_text)
 {
 	lv_obj_t *icon_rect = lv_obj_create(parent);
 	lv_obj_set_size(icon_rect, size, size);
@@ -103,54 +100,32 @@ lv_obj_t *create_icon(lv_obj_t *parent, const uint16_t *icon_data, int32_t  pos_
 	lv_obj_set_style_border_color(icon_rect, lv_color_white(), 0);
 
 	if (label_text) {
-		create_label(icon_rect, 
-			label_text, 
-			0, 
-			0, 
-			-1,
-			lv_color_white(), 
-			&lv_font_unscii_8,
-			true);
+		create_label(icon_rect, label_text, 0, 0, -1, lv_color_white(), &lv_font_unscii_8,
+			     true);
 	}
 
 	return icon_rect;
 }
 
-lv_obj_t *create_card_with_label(lv_obj_t *parent, const char *title, const char *value, int32_t  width,
-				 int32_t  height, int32_t  pos_x, int32_t  pos_y, int32_t  radius, lv_color_t bg_color,
-				 lv_color_t text_color)
+lv_obj_t *create_card_with_label(lv_obj_t *parent, const char *title, const char *value,
+				 int32_t width, int32_t height, int32_t pos_x, int32_t pos_y,
+				 int32_t radius, lv_color_t bg_color, lv_color_t text_color)
 {
-	lv_obj_t *card = create_container(parent, 
-									width, 
-									height, 
-									pos_x, 
-									pos_y, 
-									radius, 
-									0,
-									lv_color_white(),
-									0,
-									bg_color, 
-									0);
+	lv_obj_t *card = create_container(parent, width, height, pos_x, pos_y, radius, 0,
+					  lv_color_white(), 0, bg_color, 0);
 
 	// 创建显示文本（标题+数值）
 	char full_text[64];
 	snprintf(full_text, sizeof(full_text), "%s\n%s", title, value);
 
-	create_label(card, 
-		full_text, 
-		0, 
-		0, 
-		-1,
-		text_color, 
-		&lv_font_unscii_8, 
-		true);
+	create_label(card, full_text, 0, 0, -1, text_color, &lv_font_unscii_8, true);
 
 	return card;
 }
 
-lv_obj_t *create_progress_bar(lv_obj_t *parent, int32_t  width, int32_t  height, int32_t  pos_x, int32_t  pos_y,
-			      int32_t min, int32_t max, int32_t value, lv_color_t bg_color,
-			      lv_color_t ind_color)
+lv_obj_t *create_progress_bar(lv_obj_t *parent, int32_t width, int32_t height, int32_t pos_x,
+			      int32_t pos_y, int32_t min, int32_t max, int32_t value,
+			      lv_color_t bg_color, lv_color_t ind_color)
 {
 	lv_obj_t *bar = lv_bar_create(parent);
 	lv_obj_set_size(bar, width, height);
@@ -163,9 +138,9 @@ lv_obj_t *create_progress_bar(lv_obj_t *parent, int32_t  width, int32_t  height,
 	return bar;
 }
 
-lv_obj_t *create_slider(lv_obj_t *parent, int32_t  width, int32_t  height, int32_t  pos_x, int32_t  pos_y, int32_t min,
-			int32_t max, int32_t value, lv_color_t bg_color, lv_color_t knob_color,
-			lv_event_cb_t event_cb)
+lv_obj_t *create_slider(lv_obj_t *parent, int32_t width, int32_t height, int32_t pos_x,
+			int32_t pos_y, int32_t min, int32_t max, int32_t value, lv_color_t bg_color,
+			lv_color_t knob_color, lv_event_cb_t event_cb)
 {
 	lv_obj_t *slider = lv_slider_create(parent);
 	lv_obj_set_size(slider, width, height);
@@ -182,7 +157,7 @@ lv_obj_t *create_slider(lv_obj_t *parent, int32_t  width, int32_t  height, int32
 	return slider;
 }
 
-lv_obj_t *create_switch(lv_obj_t *parent, int32_t  pos_x, int32_t  pos_y, bool initial_state,
+lv_obj_t *create_switch(lv_obj_t *parent, int32_t pos_x, int32_t pos_y, bool initial_state,
 			lv_color_t bg_color, lv_color_t ind_color, lv_event_cb_t event_cb)
 {
 	lv_obj_t *sw = lv_switch_create(parent);
@@ -201,7 +176,7 @@ lv_obj_t *create_switch(lv_obj_t *parent, int32_t  pos_x, int32_t  pos_y, bool i
 	return sw;
 }
 
-lv_obj_t *create_checkbox(lv_obj_t *parent, const char *text, int32_t  pos_x, int32_t  pos_y,
+lv_obj_t *create_checkbox(lv_obj_t *parent, const char *text, int32_t pos_x, int32_t pos_y,
 			  bool initial_state, lv_color_t text_color, const lv_font_t *font,
 			  lv_event_cb_t event_cb)
 {
@@ -225,7 +200,8 @@ lv_obj_t *create_checkbox(lv_obj_t *parent, const char *text, int32_t  pos_x, in
 	return cb;
 }
 
-lv_obj_t *create_icon_image(lv_obj_t *parent, const uint16_t *icon_data, int32_t  pos_x, int32_t  pos_y)
+lv_obj_t *create_icon_image(lv_obj_t *parent, const uint16_t *icon_data, int32_t pos_x,
+			    int32_t pos_y)
 {
 	/* Create a simple colored rectangle for now */
 	lv_obj_t *icon_rect = lv_obj_create(parent);
@@ -263,25 +239,25 @@ lv_obj_t *create_icon_image(lv_obj_t *parent, const uint16_t *icon_data, int32_t
 	return icon_rect;
 }
 
-lv_obj_t *create_textarea(lv_obj_t *parent, int32_t width, int32_t height, int32_t pos_x, int32_t pos_y,
-			  lv_color_t bg_color, lv_color_t text_color, const lv_font_t *font,
-			  const char *placeholder, bool one_line)
+lv_obj_t *create_textarea(lv_obj_t *parent, int32_t width, int32_t height, int32_t pos_x,
+			  int32_t pos_y, lv_color_t bg_color, lv_color_t text_color,
+			  const lv_font_t *font, const char *placeholder, bool one_line)
 {
 	lv_obj_t *textarea = lv_textarea_create(parent);
 	lv_obj_set_size(textarea, width, height);
 	lv_obj_set_pos(textarea, pos_x, pos_y);
 	lv_obj_set_style_bg_color(textarea, bg_color, 0);
 	lv_obj_set_style_text_color(textarea, text_color, 0);
-	
+
 	if (font) {
 		lv_obj_set_style_text_font(textarea, font, 0);
 	}
-	
+
 	if (placeholder) {
 		lv_textarea_set_placeholder_text(textarea, placeholder);
 	}
-	
+
 	lv_textarea_set_one_line(textarea, one_line);
-	
+
 	return textarea;
 }

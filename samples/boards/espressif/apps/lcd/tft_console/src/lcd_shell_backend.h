@@ -12,7 +12,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Initialize the LCD shell backend */
+/**
+ * Initialize the LCD shell backend 
+ * memset shell_input_buffer 0
+ * init mutex
+ * memset latest_msg 0
+ * 
+*/
 int lcd_shell_backend_init(void);
 
 /* Get reference to the LCD shell instance */

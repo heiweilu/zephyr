@@ -272,7 +272,7 @@ int lcd_shell_try_get_input(uint8_t *out_type, char *out_buf, size_t max_len)
 
 	out_buf[copy] = '\0';
 	latest_msg_valid = false;
-    
+
 	k_mutex_unlock(&latest_msg_lock);
 
 	if (out_type) {

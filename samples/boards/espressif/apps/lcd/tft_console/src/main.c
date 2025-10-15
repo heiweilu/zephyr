@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 /* Real interactive shell includes */
 #include "lcd_shell_backend.h"
 
-/* ================= LCD initialization Start================= */
+/* ================= LCD initialization ================= */
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
 
@@ -350,10 +350,14 @@ static int (*original_uart_read)(const struct shell_transport *transport, void *
  */
 #define LAST_READ_BUF_SIZE 32
 #define ECHO_WINDOW_MS     200
-static uint8_t last_read_buf[LAST_READ_BUF_SIZE];
-static size_t last_read_len = 0;
-static uint32_t last_read_ts = 0;
-static bool last_read_was_tab = false; /* Track if last read contained tab */
+
+typedef struct {
+	uint8_t last_read_buf[LAST_READ_BUF_SIZE];
+	size_t last_read_len;
+	uint32_t last_read_ts;
+	bool last_read_was_tab;
+} last_read_t;
+last_read_t last_read = {0};
 
 /* Intercepted UART transport write function */
 static int intercepted_uart_write(const struct shell_transport *transport, const void *data,
@@ -372,7 +376,7 @@ static int intercepted_uart_write(const struct shell_transport *transport, const
 			 * If the last read was a tab character and this write contains
 			 * printable characters (the completion), update the input buffer.
 			 */
-			if (last_read_was_tab && length > 0 && length < 64) {
+			if (last_read.last_read_was_tab && length > 0 && length < 64) {
 				/* Check if this looks like a completion (printable chars, no
 				 * newline) */
 				bool looks_like_completion = true;
@@ -395,7 +399,7 @@ static int intercepted_uart_write(const struct shell_transport *transport, const
 						"input",
 						length);
 					lcd_shell_send_input(str, length);
-					last_read_was_tab = false; /* Reset flag */
+					last_read.last_read_was_tab = false; /* Reset flag */
 				}
 			}
 		}
@@ -442,44 +446,23 @@ static void lvgl_init(void)
 	lv_obj_set_scrollbar_mode(app.console_label, LV_SCROLLBAR_MODE_AUTO);
 }
 
+/* if want to print to serial: shell_print(sh, "text %d", value); */
 static int cmd_system_info(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	/* Print to both serial AND LCD */
-	shell_print(sh, "ESP32-S3 System Information:");
-	shell_output_callback("=== ESP32-S3 System Info ===\n", 30);
+	static const char *const sys_info[] = {"== Sys Info ==\n",
+					       "CPU: ESP32-S3 @ 240MHz\n",
+					       "PSRAM: 8MB\n",
+					       "Flash: 16MB\n",
+					       "Zephyr: v4.2.99\n",
+					       "LVGL: v9.x\n",
+					       NULL};
 
-	shell_print(sh, "  CPU: ESP32-S3 @ 240MHz");
-	shell_output_callback("CPU: ESP32-S3 @ 240MHz\n", 24);
-
-	shell_print(sh, "  PSRAM: 8MB");
-	shell_output_callback("PSRAM: 8MB\n", 11);
-
-	shell_print(sh, "  Flash: 16MB");
-	shell_output_callback("Flash: 16MB\n", 12);
-
-	shell_print(sh, "  Zephyr: v4.2.99");
-	shell_output_callback("Zephyr: v4.2.99\n", 16);
-
-	shell_print(sh, "  LVGL: v9.x");
-	shell_output_callback("LVGL: v9.x\n", 11);
-
-	/* Uptime */
-	uint32_t uptime_ms = k_uptime_get_32();
-	uint32_t seconds = uptime_ms / 1000;
-	uint32_t minutes = seconds / 60;
-	uint32_t hours = minutes / 60;
-
-	char uptime_buf[64];
-	snprintf(uptime_buf, sizeof(uptime_buf), "Uptime: %02lu:%02lu:%02lu\n",
-		 (unsigned long)(hours % 24), (unsigned long)(minutes % 60),
-		 (unsigned long)(seconds % 60));
-
-	shell_print(sh, "  Uptime: %02lu:%02lu:%02lu", (unsigned long)(hours % 24),
-		    (unsigned long)(minutes % 60), (unsigned long)(seconds % 60));
-	shell_output_callback(uptime_buf, strlen(uptime_buf));
+	for (int i = 0; sys_info[i] != NULL; i++) {
+		shell_output_callback(sys_info[i], strlen(sys_info[i]));
+	}
 
 	return 0;
 }
@@ -499,8 +482,6 @@ static int cmd_lcd_clear(const struct shell *sh, size_t argc, char **argv)
 		lv_obj_invalidate(app.console_label);
 	}
 
-	// shell_print(sh, "Console cleared");
-
 	return 0;
 }
 
@@ -509,19 +490,17 @@ static int cmd_demo(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	shell_print(sh, "Running demo sequence...");
-	shell_output_callback("Running demo sequence...\n", 25);
+	shell_output_callback("Running demo\n", 25);
 
 	for (int i = 1; i <= 5; i++) {
 		char step_buf[32];
-		snprintf(step_buf, sizeof(step_buf), "Demo step %d/5\n", i);
 
-		shell_print(sh, "Demo step %d/5", i);
+		snprintf(step_buf, sizeof(step_buf), "Demo step %d/5\n", i);
 		shell_output_callback(step_buf, strlen(step_buf));
+
 		k_msleep(500);
 	}
 
-	shell_print(sh, "Demo completed!");
 	shell_output_callback("Demo completed!\n", 16);
 
 	return 0;
@@ -530,212 +509,143 @@ static int cmd_demo(const struct shell *sh, size_t argc, char **argv)
 /* Register shell commands */
 SHELL_CMD_REGISTER(sysinfo, NULL, "Show system information", cmd_system_info);
 SHELL_CMD_REGISTER(clear, NULL, "", cmd_lcd_clear);
-SHELL_CMD_REGISTER(demo, NULL, "Run demo sequence", cmd_demo);
+SHELL_CMD_REGISTER(demo, NULL, "Run demo", cmd_demo);
 
 /* Forward declaration for intercepted read function (definition after main) */
 static int intercepted_uart_read(const struct shell_transport *transport, void *data, size_t length,
 				 size_t *cnt);
 
-int main(void)
+/* Consume any backend input updates from message queue (non-blocking) */
+static void consume_backend_input(void)
 {
-	int ret;
+	uint8_t msg_type = 0;
+	char inbuf[CURRENT_INPUT_LINE_SIZE];
+	int got = 0;
 
-	/* Initialize hardware */
-	ret = lcd_init();
-	if (ret != 0) {
-		LOG_ERR("Failed to initialize LCD: %d", ret);
-		return ret;
-	}
-
-	lvgl_init();
-
-	/* Initialize shell backend */
-	ret = lcd_shell_backend_init();
-	if (ret != 0) {
-		LOG_ERR("Failed to initialize shell backend: %d", ret);
-		return ret;
-	}
-
-	/* Set shell output callback */
-	lcd_shell_set_output_callback(shell_output_callback);
-
-	/* Hook into default UART shell transport */
-	const struct shell *default_shell = shell_backend_uart_get_ptr();
-	if (default_shell && default_shell->iface && default_shell->iface->api) {
-		/* Replace transport write function with our interceptor */
-		struct shell_transport_api *api =
-			(struct shell_transport_api *)default_shell->iface->api;
-		original_uart_write = api->write;
-		api->write = intercepted_uart_write;
-		/* Replace read as well to capture input bytes */
-		original_uart_read = api->read;
-		api->read = intercepted_uart_read;
-	} else {
-		LOG_WRN("Could not hook into UART shell transport");
-	}
-
-	/* Activate shell output capture */
-	shell_capture_active = true;
-
-	uint32_t counter = 0;
-
-	while (1) {
-		/* Handle LVGL tasks */
-		lv_timer_handler();
-
-		/* Consume any backend input updates from message queue (non-blocking) */
-		{
-			uint8_t msg_type = 0;
-			char inbuf[CURRENT_INPUT_LINE_SIZE];
-			int got = 0;
-			while ((got = lcd_shell_try_get_input(&msg_type, inbuf, sizeof(inbuf))) >=
-			       0) {
-				if (got == 0 && msg_type == 0) {
-					break; /* no more messages */
-				}
-				if (msg_type == MSG_TYPE_INPUT) {
-					/* Update current input line for rendering */
-					size_t copy_len = (got < CURRENT_INPUT_LINE_SIZE - 1)
-								  ? (size_t)got
-								  : (CURRENT_INPUT_LINE_SIZE - 1);
-
-					memcpy(current_input_line, inbuf, copy_len);
-					current_input_line[copy_len] = '\0';
-					current_input_len = copy_len;
-					display_update_needed = true;
-				} else if (msg_type == MSG_TYPE_ENTER) {
-					/* Clear any pending typed text shown at prompt area.
-					 * Remove the trailing partial line (prompt + typed)
-					 * from shell_display_buffer so console shows only output.
-					 */
-					/* Find last newline in shell_display_buffer */
-					ssize_t last_nl = -1;
-					for (ssize_t i = (ssize_t)shell_display_len - 1; i >= 0;
-					     i--) {
-						if (shell_display_buffer[i] == '\n') {
-							last_nl = i;
-							break;
-						}
-					}
-					if (last_nl >= 0) {
-						/* keep up to and including last_nl */
-						shell_display_len = (size_t)last_nl + 1;
-						shell_display_buffer[shell_display_len] = '\0';
-					} else {
-						/* No newline, clear whole buffer */
-						shell_display_len = 0;
-						shell_display_buffer[0] = '\0';
-					}
-					/* Also clear the current input line displayed */
-					current_input_len = 0;
-					current_input_line[0] = '\0';
-					display_update_needed = true;
-				}
-			}
+	while ((got = lcd_shell_try_get_input(&msg_type, inbuf, sizeof(inbuf))) >= 0) {
+		if (got == 0 && msg_type == 0) {
+			break; /* no more messages */
 		}
 
-		/* High priority: Check for display update immediately */
-		if (display_update_needed && app.console_label) {
-			/* 如果有当前输入行，把它临时附加到显示缓冲的末尾用于渲染 */
-			char tmp_buf[SHELL_DISPLAY_BUFFER_SIZE + CURRENT_INPUT_LINE_SIZE];
-			/* Build tmp_buf by copying shell_display_buffer but replace the trailing
-			 * partial line (after last '\n') with current_input_line so edits are
-			 * immediately visible where the prompt/input sits.
+		if (msg_type == MSG_TYPE_INPUT) {
+			/* Update current input line for rendering */
+			size_t copy_len = (got < CURRENT_INPUT_LINE_SIZE - 1)
+						  ? (size_t)got
+						  : (CURRENT_INPUT_LINE_SIZE - 1);
+
+			memcpy(current_input_line, inbuf, copy_len);
+			current_input_line[copy_len] = '\0';
+			current_input_len = copy_len;
+			display_update_needed = true;
+		} else if (msg_type == MSG_TYPE_ENTER) {
+			/* Clear any pending typed text shown at prompt area.
+			 * Remove the trailing partial line (prompt + typed)
+			 * from shell_display_buffer so console shows only output.
 			 */
-			size_t base_len = 0;
 			/* Find last newline in shell_display_buffer */
 			ssize_t last_nl = -1;
+
 			for (ssize_t i = (ssize_t)shell_display_len - 1; i >= 0; i--) {
 				if (shell_display_buffer[i] == '\n') {
 					last_nl = i;
 					break;
 				}
 			}
+
 			if (last_nl >= 0) {
-				/* Keep up to and including the last newline */
-				base_len = (size_t)last_nl + 1;
+				/* keep up to and including last_nl */
+				shell_display_len = (size_t)last_nl + 1;
+				shell_display_buffer[shell_display_len] = '\0';
 			} else {
-				/* No newline found: drop any trailing partial content and start
-				 * fresh */
-				base_len = 0;
+				/* No newline, clear whole buffer */
+				shell_display_len = 0;
+				shell_display_buffer[0] = '\0';
 			}
-			if (base_len > sizeof(tmp_buf) - 1) {
-				base_len = sizeof(tmp_buf) - 1;
-			}
-			memcpy(tmp_buf, shell_display_buffer, base_len);
-			/* Append prompt and current input line after the last newline */
-			const char *prompt = "s3:~$ ";
-			size_t prompt_len = strlen(prompt);
-			/* Ensure prompt fits */
-			size_t copy_len = prompt_len + current_input_len;
-			if (base_len + copy_len >= sizeof(tmp_buf) - 1) {
-				copy_len = sizeof(tmp_buf) - 1 - base_len;
-			}
-			if (copy_len > 0) {
-				/* Copy prompt then input (truncated to fit) */
-				size_t to_copy_prompt = prompt_len;
-				if (to_copy_prompt > sizeof(tmp_buf) - 1 - base_len) {
-					to_copy_prompt = sizeof(tmp_buf) - 1 - base_len;
-				}
-				memcpy(tmp_buf + base_len, prompt, to_copy_prompt);
-				base_len += to_copy_prompt;
-				/* Copy input content after prompt */
-				size_t avail = sizeof(tmp_buf) - 1 - base_len;
-				size_t to_copy_input = current_input_len;
-				if (to_copy_input > avail) {
-					to_copy_input = avail;
-				}
-				if (to_copy_input > 0) {
-					memcpy(tmp_buf + base_len, current_input_line,
-					       to_copy_input);
-					base_len += to_copy_input;
-				}
-			}
-			tmp_buf[base_len] = '\0';
-			lv_label_set_text(app.console_label, tmp_buf);
-			lv_obj_scroll_to_y(app.console_label, LV_COORD_MAX, LV_ANIM_OFF);
-			/* Also update status label with current input for quick visual debug */
-			if (app.status_label) {
-				char in_dbg[512];
-				if (current_input_len > 0) {
-					snprintk(in_dbg, sizeof(in_dbg), "in:%s",
-						 current_input_line);
-				} else {
-					snprintk(in_dbg, sizeof(in_dbg), "in:");
-				}
-				lv_label_set_text(app.status_label, in_dbg);
-				lv_obj_invalidate(app.status_label);
-			}
-			lv_obj_invalidate(app.console_label);
-			display_update_needed = false;
+
+			/* Also clear the current input line displayed */
+			current_input_len = 0;
+			current_input_line[0] = '\0';
+			display_update_needed = true;
 		}
-
-		/* Update status bar every 5 seconds */
-		if (counter % 200 == 0) {
-			uint32_t uptime_ms = k_uptime_get_32();
-			uint32_t seconds = uptime_ms / 1000;
-			uint32_t minutes = seconds / 60;
-			uint32_t hours = minutes / 60;
-
-			char status_text[64];
-			snprintf(status_text, sizeof(status_text),
-				 "Shell Active | Up: %02lu:%02lu:%02lu",
-				 (unsigned long)(hours % 24), (unsigned long)(minutes % 60),
-				 (unsigned long)(seconds % 60));
-
-			if (app.status_label) {
-				lv_label_set_text(app.status_label, status_text);
-			}
-		}
-
-		counter++;
-		/* Reduced sleep time for faster LCD updates */
-		k_msleep(25);
 	}
-
-	return 0;
 }
-
+/* High priority: Check for display update immediately */
+static void check_display_update(void)
+{
+	if (display_update_needed && app.console_label) {
+		/* 如果有当前输入行，把它临时附加到显示缓冲的末尾用于渲染 */
+		char tmp_buf[SHELL_DISPLAY_BUFFER_SIZE + CURRENT_INPUT_LINE_SIZE];
+		/* Build tmp_buf by copying shell_display_buffer but replace the trailing
+		 * partial line (after last '\n') with current_input_line so edits are
+		 * immediately visible where the prompt/input sits.
+		 */
+		size_t base_len = 0;
+		/* Find last newline in shell_display_buffer */
+		ssize_t last_nl = -1;
+		for (ssize_t i = (ssize_t)shell_display_len - 1; i >= 0; i--) {
+			if (shell_display_buffer[i] == '\n') {
+				last_nl = i;
+				break;
+			}
+		}
+		if (last_nl >= 0) {
+			/* Keep up to and including the last newline */
+			base_len = (size_t)last_nl + 1;
+		} else {
+			/* No newline found: drop any trailing partial content and start
+			 * fresh */
+			base_len = 0;
+		}
+		if (base_len > sizeof(tmp_buf) - 1) {
+			base_len = sizeof(tmp_buf) - 1;
+		}
+		memcpy(tmp_buf, shell_display_buffer, base_len);
+		/* Append prompt and current input line after the last newline */
+		const char *prompt = "s3:~$ ";
+		size_t prompt_len = strlen(prompt);
+		/* Ensure prompt fits */
+		size_t copy_len = prompt_len + current_input_len;
+		if (base_len + copy_len >= sizeof(tmp_buf) - 1) {
+			copy_len = sizeof(tmp_buf) - 1 - base_len;
+		}
+		if (copy_len > 0) {
+			/* Copy prompt then input (truncated to fit) */
+			size_t to_copy_prompt = prompt_len;
+			if (to_copy_prompt > sizeof(tmp_buf) - 1 - base_len) {
+				to_copy_prompt = sizeof(tmp_buf) - 1 - base_len;
+			}
+			memcpy(tmp_buf + base_len, prompt, to_copy_prompt);
+			base_len += to_copy_prompt;
+			/* Copy input content after prompt */
+			size_t avail = sizeof(tmp_buf) - 1 - base_len;
+			size_t to_copy_input = current_input_len;
+			if (to_copy_input > avail) {
+				to_copy_input = avail;
+			}
+			if (to_copy_input > 0) {
+				memcpy(tmp_buf + base_len, current_input_line, to_copy_input);
+				base_len += to_copy_input;
+			}
+		}
+		tmp_buf[base_len] = '\0';
+		lv_label_set_text(app.console_label, tmp_buf);
+		lv_obj_scroll_to_y(app.console_label, LV_COORD_MAX, LV_ANIM_OFF);
+		/* Also update status label with current input for quick visual debug */
+		if (app.status_label) {
+			char in_dbg[512];
+			if (current_input_len > 0) {
+				snprintk(in_dbg, sizeof(in_dbg), "in:%s", current_input_line);
+			} else {
+				snprintk(in_dbg, sizeof(in_dbg), "in:");
+			}
+			lv_label_set_text(app.status_label, in_dbg);
+			lv_obj_invalidate(app.status_label);
+		}
+		lv_obj_invalidate(app.console_label);
+		display_update_needed = false;
+	}
+}
+/* Intercepted UART read function */
 static int intercepted_uart_read(const struct shell_transport *transport, void *data, size_t length,
 				 size_t *cnt)
 {
@@ -754,11 +664,11 @@ static int intercepted_uart_read(const struct shell_transport *transport, void *
 		const char *input_data = (const char *)data;
 
 		/* Check if this read contains a tab character */
-		last_read_was_tab = false;
+		last_read.last_read_was_tab = false;
 		for (size_t i = 0; i < *cnt; i++) {
 			if (input_data[i] == '\t') {
-				last_read_was_tab = true;
-				last_read_ts = k_uptime_get_32();
+				last_read.last_read_was_tab = true;
+				last_read.last_read_ts = k_uptime_get_32();
 				LOG_DBG("Tab character detected in read");
 				break;
 			}
@@ -766,8 +676,8 @@ static int intercepted_uart_read(const struct shell_transport *transport, void *
 
 		/* Store last read data for echo detection */
 		size_t copy_len = (*cnt < LAST_READ_BUF_SIZE) ? *cnt : LAST_READ_BUF_SIZE;
-		memcpy(last_read_buf, data, copy_len);
-		last_read_len = copy_len;
+		memcpy(last_read.last_read_buf, data, copy_len);
+		last_read.last_read_len = copy_len;
 
 		/* Forward to backend to update LCD input line */
 		LOG_DBG("intercepted read: got %zu bytes", *cnt);
@@ -777,4 +687,112 @@ static int intercepted_uart_read(const struct shell_transport *transport, void *
 	return ret;
 }
 
-/* intercepted_uart_read is defined below */
+/* Update status bar every 5 seconds */
+typedef struct {
+	uint32_t counter;
+	uint32_t uptime_ms;
+	uint32_t seconds;
+	uint32_t minutes;
+	uint32_t hours;
+} status_info_t;
+static status_info_t status_info = {0};
+
+static void update_status_bar(void)
+{
+	if (status_info.counter % 200 == 0) {
+		status_info.uptime_ms = k_uptime_get_32();
+		status_info.seconds = status_info.uptime_ms / 1000;
+		status_info.minutes = status_info.seconds / 60;
+		status_info.hours = status_info.minutes / 60;
+
+		char status_text[64];
+		snprintf(status_text, sizeof(status_text), "Shell Active | Up: %02lu:%02lu:%02lu",
+			 (unsigned long)(status_info.hours % 24),
+			 (unsigned long)(status_info.minutes % 60),
+			 (unsigned long)(status_info.seconds % 60));
+
+		if (app.status_label) {
+			lv_label_set_text(app.status_label, status_text);
+		}
+	}
+
+	status_info.counter++;
+}
+
+/**
+ * hook_uart_shell_transport
+ *
+ * Locate the default UART shell transport and replace its read/write
+ * function pointers with our interceptors so we can capture both
+ * output (for history rendering) and input bytes (for live prompt updates).
+ *
+ * This function preserves the original function pointers in
+ * `original_uart_write` and `original_uart_read` so the shell continues
+ * to operate normally after interception.
+ */
+static void hook_uart_shell_transport(void)
+{
+	const struct shell *default_shell = shell_backend_uart_get_ptr();
+	if (default_shell && default_shell->iface && default_shell->iface->api) {
+		struct shell_transport_api *api =
+			(struct shell_transport_api *)default_shell->iface->api;
+
+		// Save original function pointers
+		original_uart_write = api->write;
+		original_uart_read = api->read;
+
+		// Replace with our interceptor functions
+		api->write = intercepted_uart_write;
+		api->read = intercepted_uart_read;
+
+		LOG_INF("UART shell transport functions intercepted successfully");
+	} else {
+		LOG_WRN("Could not hook into UART shell transport");
+	}
+}
+int main(void)
+{
+	int ret;
+
+	ret = lcd_init();
+	if (ret != 0) {
+		LOG_ERR("Failed to initialize LCD: %d", ret);
+		return ret;
+	}
+
+	lvgl_init();
+
+	ret = lcd_shell_backend_init();
+	if (ret != 0) {
+		LOG_ERR("Failed to initialize shell backend: %d", ret);
+		return ret;
+	}
+
+	/* Set shell output callback */
+	lcd_shell_set_output_callback(shell_output_callback);
+
+	/* Hook into default UART shell transport */
+	hook_uart_shell_transport();
+
+	/* Activate shell output capture */
+	shell_capture_active = true;
+
+	while (1) {
+		/* Handle LVGL tasks */
+		lv_timer_handler();
+
+		/* Consume any pending input from shell backend */
+		consume_backend_input();
+
+		/* Check if display needs update */
+		check_display_update();
+
+		/* Update status bar every 5 seconds */
+		update_status_bar();
+
+		/* Reduced sleep time for faster LCD updates */
+		k_msleep(25);
+	}
+
+	return 0;
+}
