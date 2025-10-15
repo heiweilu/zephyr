@@ -35,10 +35,16 @@ void lcd_shell_set_output_callback(lcd_shell_output_cb_t callback);
 #define MSG_TYPE_INPUT 0x1F
 #define MSG_TYPE_ENTER 0x1E
 
-/* Try to get an input update from backend queue. If an update is available,
- * writes its type to *out_type (MSG_TYPE_*) and copies optional payload into
- * out_buf (NUL-terminated). Returns length of payload copied (0 if none), or
- * 0 if no message available.
+/**
+ * Try to pop an input update message from backend queue. Returns length of
+ * input (0 if empty). out_buf will be NUL-terminated.
+ * @param out_type Pointer to uint8_t to receive message type (MSG_TYPE_INPUT or
+ * MSG_TYPE_ENTER). Can be NULL if type not needed.
+ * @param out_buf Pointer to buffer to receive input string. Must be at least
+ * SHELL_INPUT_BUFFER_SIZE bytes.
+ * @param max_len Maximum length of out_buf (including NUL). Must be >
+ * 0.
+ * @return Length of input string (excluding NUL), or 0 if no message available
  */
 int lcd_shell_try_get_input(uint8_t *out_type, char *out_buf, size_t max_len);
 
