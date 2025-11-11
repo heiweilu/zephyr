@@ -1,0 +1,13 @@
+/ {
+    aliases {
+        sw0 = &button0;
+    };
+
+    buttons {
+        compatible = "gpio-keys";
+        button0: button_0 {
+            gpios = <&gpio0 0 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            label = "User button";
+        };
+    };
+};
