@@ -88,6 +88,11 @@ if(SYSROOT_DIR)
     --sysroot=${SYSROOT_DIR}
     )
 
+  # Also pass sysroot to linker so GCC can find spec files (e.g. picolibc.specs)
+  list(APPEND TOOLCHAIN_LD_FLAGS
+    --sysroot=${SYSROOT_DIR}
+    )
+
   # Use sysroot dir to set the libc path's
   execute_process(
     COMMAND ${CMAKE_C_COMPILER} ${TOOLCHAIN_C_FLAGS} --print-multi-directory
