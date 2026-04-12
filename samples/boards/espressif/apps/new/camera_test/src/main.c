@@ -1,94 +1,127 @@
 #include <zephyr/device.h>
-#include <zephyr/drivers/i2c.h>
-#include <zephyr/drivers/pwm.h>
+#include <zephyr/drivers/video.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
-#define I2C_NODE DT_NODELABEL(i2c0)
-#define XCLK_PWM_SPEC PWM_DT_SPEC_GET(DT_PATH(zephyr_user))
+#if !DT_HAS_CHOSEN(zephyr_camera)
+#error Missing zephyr,camera chosen node
+#endif
 
-#define OV3660_I2C_ADDR 0x3c
-#define REG_CHIP_ID_HIGH 0x300a
-#define REG_CHIP_ID_LOW  0x300b
-#define OV3660_PID       0x3660
+#define FRAME_WIDTH 320
+#define FRAME_HEIGHT 240
+#define FRAME_BYTES (FRAME_WIDTH * FRAME_HEIGHT * 2)
+#define FRAME_BUFFER_COUNT 2
 
-static const struct device *const i2c_dev = DEVICE_DT_GET(I2C_NODE);
-static const struct pwm_dt_spec xclk_pwm = XCLK_PWM_SPEC;
-
-static int ov3660_read_reg(uint16_t reg, uint8_t *value)
-{
-	uint8_t addr_buf[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xff)};
-
-	return i2c_write_read(i2c_dev, OV3660_I2C_ADDR, addr_buf, sizeof(addr_buf), value, 1);
-}
+static struct video_buffer *frame_buffers[FRAME_BUFFER_COUNT];
 
 int main(void)
 {
+	const struct device *const camera_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
+	struct video_format fmt = {
+		.type = VIDEO_BUF_TYPE_OUTPUT,
+		.pixelformat = VIDEO_PIX_FMT_RGB565,
+		.width = FRAME_WIDTH,
+		.height = FRAME_HEIGHT,
+		.pitch = FRAME_WIDTH * 2,
+	};
+	struct video_caps caps = {0};
+	struct video_buffer *captured = NULL;
 	int ret;
 
-	printk("\n*** CHD-ESP32-S3-BOX OV3660 Probe ***\n");
-	printk("I2C0: SDA=IO8 SCL=IO18\n");
-	printk("XMCLK: IO39 via LEDC channel 0\n");
+	printk("\n*** CHD-ESP32-S3-BOX OV3660 Capture Test ***\n");
 
-	if (!device_is_ready(i2c_dev)) {
-		printk("I2C device not ready\n");
+	if (!device_is_ready(camera_dev)) {
+		printk("camera device not ready\n");
 		return 0;
 	}
 
-	if (!pwm_is_ready_dt(&xclk_pwm)) {
-		printk("PWM device for XMCLK not ready\n");
-		return 0;
-	}
-
-	ret = pwm_set_dt(&xclk_pwm, 100U, 50U);
+	ret = video_get_caps(camera_dev, &caps);
 	if (ret < 0) {
-		printk("Failed to start XMCLK: %d\n", ret);
+		printk("video_get_caps failed: %d\n", ret);
 		return 0;
 	}
 
-	printk("XMCLK started at 10MHz\n");
-	k_msleep(50);
+	if (caps.min_vbuf_count > FRAME_BUFFER_COUNT) {
+		printk("camera requires %u buffers, app only provides %u\n",
+			caps.min_vbuf_count, FRAME_BUFFER_COUNT);
+		return 0;
+	}
 
-	while (1) {
-		uint8_t pid_high = 0;
-		uint8_t pid_low = 0;
-		uint16_t pid = 0;
+	ret = video_set_format(camera_dev, &fmt);
+	if (ret < 0) {
+		printk("video_set_format failed: %d\n", ret);
+		return 0;
+	}
 
-		printk("\n[probe] checking OV3660 at 0x%02x\n", OV3660_I2C_ADDR);
+	ret = video_get_format(camera_dev, &fmt);
+	if (ret < 0) {
+		printk("video_get_format failed: %d\n", ret);
+		return 0;
+	}
 
-		ret = i2c_write(i2c_dev, NULL, 0, OV3660_I2C_ADDR);
+	printk("capture format: %c%c%c%c %ux%u pitch=%u\n",
+		(char)(fmt.pixelformat & 0xff),
+		(char)((fmt.pixelformat >> 8) & 0xff),
+		(char)((fmt.pixelformat >> 16) & 0xff),
+		(char)((fmt.pixelformat >> 24) & 0xff),
+		fmt.width, fmt.height, fmt.pitch);
+
+	for (int index = 0; index < FRAME_BUFFER_COUNT; index++) {
+		frame_buffers[index] = video_buffer_aligned_alloc(
+			FRAME_BYTES, CONFIG_VIDEO_BUFFER_POOL_ALIGN, K_FOREVER);
+		if (frame_buffers[index] == NULL) {
+			printk("video buffer alloc failed at %d\n", index);
+			return 0;
+		}
+
+		frame_buffers[index]->type = VIDEO_BUF_TYPE_OUTPUT;
+
+		ret = video_enqueue(camera_dev, frame_buffers[index]);
 		if (ret < 0) {
-			printk("[probe] no ACK: %d\n", ret);
-			k_msleep(2000);
-			continue;
+			printk("video_enqueue failed at %d: %d\n", index, ret);
+			return 0;
 		}
+	}
 
-		printk("[probe] SCCB ACK received\n");
+	ret = video_stream_start(camera_dev, VIDEO_BUF_TYPE_OUTPUT);
+	if (ret < 0) {
+		printk("video_stream_start failed: %d\n", ret);
+		return 0;
+	}
 
-		ret = ov3660_read_reg(REG_CHIP_ID_HIGH, &pid_high);
+	printk("stream started\n");
+
+	for (int frame = 0; frame < 5; frame++) {
+		ret = video_dequeue(camera_dev, &captured, K_FOREVER);
 		if (ret < 0) {
-			printk("[probe] CHIP_ID high read failed: %d\n", ret);
-			k_msleep(2000);
-			continue;
+			printk("frame dequeue failed: %d\n", ret);
+			break;
 		}
 
-		ret = ov3660_read_reg(REG_CHIP_ID_LOW, &pid_low);
+		printk("frame %d captured: %u bytes ts=%u first=%02x %02x %02x %02x\n",
+			frame,
+			captured->bytesused,
+			captured->timestamp,
+			captured->buffer[0],
+			captured->buffer[1],
+			captured->buffer[2],
+			captured->buffer[3]);
+
+		ret = video_enqueue(camera_dev, captured);
 		if (ret < 0) {
-			printk("[probe] CHIP_ID low read failed: %d\n", ret);
-			k_msleep(2000);
-			continue;
+			printk("frame requeue failed: %d\n", ret);
+			break;
 		}
+	}
 
-		pid = ((uint16_t)pid_high << 8) | pid_low;
-		printk("[probe] CHIP ID: 0x%04x\n", pid);
+	video_stream_stop(camera_dev, VIDEO_BUF_TYPE_OUTPUT);
+	printk("stream stopped\n");
 
-		if (pid == OV3660_PID) {
-			printk("[probe] OV3660 detection OK\n");
-		} else {
-			printk("[probe] unexpected sensor ID, expected 0x%04x\n", OV3660_PID);
+	for (int index = 0; index < FRAME_BUFFER_COUNT; index++) {
+		if (frame_buffers[index] != NULL) {
+			video_buffer_release(frame_buffers[index]);
+			frame_buffers[index] = NULL;
 		}
-
-		k_msleep(2000);
 	}
 
 	return 0;

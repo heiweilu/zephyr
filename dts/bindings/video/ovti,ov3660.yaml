@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: OV3660 CMOS video sensor
+
+compatible: "ovti,ov3660"
+
+properties:
+  reset-gpios:
+    type: phandle-array
+    description: |
+      The RESET pin is asserted low to reset the sensor.
+
+  powerdown-gpios:
+    type: phandle-array
+    description: |
+      Optional PWDN pin. Active high powers the sensor down.
+
+include: i2c-device.yaml

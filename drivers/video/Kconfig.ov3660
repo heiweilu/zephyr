@@ -1,0 +1,11 @@
+# OV3660
+
+# SPDX-License-Identifier: Apache-2.0
+
+config VIDEO_OV3660
+	bool "OV3660 CMOS digital image sensor"
+	select I2C
+	depends on DT_HAS_OVTI_OV3660_ENABLED
+	default y
+	help
+	  Enable driver for OV3660 CMOS digital image sensor device.

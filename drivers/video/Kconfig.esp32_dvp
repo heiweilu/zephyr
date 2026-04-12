@@ -8,3 +8,13 @@ config VIDEO_ESP32
 	default y
 	help
 	  This option enables the video interface for the esp32s3.
+
+config VIDEO_ESP32_DMA_BUFFER_MAX_SIZE
+	int "ESP32 video DMA block size"
+	depends on VIDEO_ESP32
+	default 4095
+	range 4 4095
+	help
+	  Size of each DMA block prepared by the ESP32 lcd_cam video driver.
+	  Some boards need a 4-byte aligned value such as 4092 to match the
+	  underlying GDMA descriptor payload limit.

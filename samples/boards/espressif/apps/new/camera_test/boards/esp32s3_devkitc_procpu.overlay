@@ -1,18 +1,14 @@
 /* CHD-ESP32-S3-BOX: OV3660 probe with shared I2C0 and XMCLK on IO39 */
 
 #include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
-#include <zephyr/dt-bindings/pwm/pwm.h>
 
 / {
 	chosen {
 		zephyr,console = &usb_serial;
 		zephyr,shell-uart = &usb_serial;
+		zephyr,camera = &lcd_cam;
 	};
-
-	zephyr,user {
-		pwms = <&ledc0 0 100 PWM_POLARITY_NORMAL>;
-	};
-	};
+};
 
 &usb_serial {
 	status = "okay";
@@ -29,10 +25,26 @@
 		};
 	};
 
-	ledc0_default: ledc0_default {
+	lcd_cam_default: lcd_cam_default {
 		group1 {
-			pinmux = <LEDC_CH0_GPIO39>;
+			pinmux = <LCD_CAM_CAM_CLK_GPIO39>;
 			output-enable;
+		};
+
+		group2 {
+			pinmux = <LCD_CAM_V_SYNC_CAM_GPIO42>,
+				 <LCD_CAM_H_ENABLE_CAM_GPIO41>,
+				 <LCD_CAM_CAM_PCLK_GPIO14>,
+				 <LCD_CAM_DATA_IN0_GPIO12>,
+				 <LCD_CAM_DATA_IN1_GPIO10>,
+				 <LCD_CAM_DATA_IN2_GPIO9>,
+				 <LCD_CAM_DATA_IN3_GPIO11>,
+				 <LCD_CAM_DATA_IN4_GPIO13>,
+				 <LCD_CAM_DATA_IN5_GPIO21>,
+				 <LCD_CAM_DATA_IN6_GPIO38>,
+				 <LCD_CAM_DATA_IN7_GPIO40>;
+			input-enable;
+			bias-disable;
 		};
 	};
 };
@@ -42,17 +54,37 @@
 	clock-frequency = <I2C_BITRATE_STANDARD>;
 	pinctrl-0 = <&i2c0_default>;
 	pinctrl-names = "default";
+
+	ov3660: ov3660@3c {
+		compatible = "ovti,ov3660";
+		reg = <0x3c>;
+		status = "okay";
+
+		port {
+			ov3660_ep_out: endpoint {
+				remote-endpoint = <&dvp_ep_in>;
+			};
+		};
+	};
 };
 
-&ledc0 {
-	status = "okay";
-	pinctrl-0 = <&ledc0_default>;
-	pinctrl-names = "default";
-	#address-cells = <1>;
-	#size-cells = <0>;
 
-	channel0: channel@0 {
-		reg = <0>;
-		timer = <0>;
+&dma {
+	status = "okay";
+	};
+
+&lcd_cam {
+	status = "okay";
+	cam-clk = <10000000>;
+	pinctrl-0 = <&lcd_cam_default>;
+	pinctrl-names = "default";
+	source = <&ov3660>;
+	dmas = <&dma 2>;
+	dma-names = "rx";
+
+	port {
+		dvp_ep_in: endpoint {
+			remote-endpoint = <&ov3660_ep_out>;
+		};
 	};
 };
