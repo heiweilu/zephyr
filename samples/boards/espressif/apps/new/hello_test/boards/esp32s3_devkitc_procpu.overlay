@@ -1,0 +1,12 @@
+/* CHD-ESP32-S3-BOX: Use USB-Serial/JTAG as console instead of UART0 */
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
