@@ -1,0 +1,57 @@
+/* CHD-ESP32-S3-BOX: USB-Serial console + SD card (1-bit SDIO) */
+
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+
+/ {
+	aliases {
+		sdhc0 = &sdhc0;
+	};
+
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,sdhc = &sdhc0;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&uart0 {
+	status = "disabled";
+};
+
+&pinctrl {
+	sdhc0_default: sdhc0_default {
+		group1 {
+			pinmux = <SDHC0_CMD_GPIO0>,
+				 <SDHC0_CLKOUT_GPIO43>,
+				 <SDHC0_DATA0_GPIO44>;
+			bias-pull-up;
+			input-enable;
+			output-high;
+		};
+	};
+};
+
+&sdhc {
+	sdhc0: sdhc@0 {
+		status = "okay";
+		pinctrl-0 = <&sdhc0_default>;
+		pinctrl-names = "default";
+		power-delay-ms = <500>;
+		max-bus-freq = <10000000>;
+		bus-width = <1>;
+
+		clk-pin = <43>;
+		cmd-pin = <0>;
+		d0-pin = <44>;
+
+		mmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};
