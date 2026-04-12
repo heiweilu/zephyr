@@ -1,5 +1,6 @@
-/* CHD-ESP32-S3-BOX: OV3660 probe with shared I2C0 and XMCLK on IO39 */
+/* CHD-ESP32-S3-BOX: OV3660 capture + ST7789V LCD preview */
 
+#include <zephyr/dt-bindings/mipi_dbi/mipi_dbi.h>
 #include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
 
 / {
@@ -7,6 +8,43 @@
 		zephyr,console = &usb_serial;
 		zephyr,shell-uart = &usb_serial;
 		zephyr,camera = &lcd_cam;
+		zephyr,display = &st7789v;
+	};
+
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		dc-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+		spi-dev = <&spi3>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		st7789v: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			mipi-max-frequency = <20000000>;
+			reg = <0>;
+			width = <320>;
+			height = <240>;
+			x-offset = <0>;
+			y-offset = <0>;
+			vcom = <0x19>;
+			gctrl = <0x35>;
+			vrhs = <0x12>;
+			vdvs = <0x20>;
+			mdac = <0x60>;
+			gamma = <0x01>;
+			colmod = <0x55>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [D0 04 0D 11 13 2B 3F 54 4C 18 0D 0B 1F 23];
+			nvgam-param = [D0 04 0C 11 13 2C 3F 44 51 2F 1F 1F 20 23];
+			ram-param = [00 F0];
+			rgb-param = [CD 08 14];
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+			inversion-off;
+		};
 	};
 };
 
@@ -47,6 +85,18 @@
 			bias-disable;
 		};
 	};
+
+	spim3_default: spim3_default {
+		group1 {
+			pinmux = <SPIM3_SCLK_GPIO7>,
+				 <SPIM3_CSEL_GPIO5>;
+		};
+
+		group2 {
+			pinmux = <SPIM3_MOSI_GPIO6>;
+			output-low;
+		};
+	};
 };
 
 &i2c0 {
@@ -69,13 +119,22 @@
 };
 
 
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim3_default>;
+	pinctrl-names = "default";
+};
+
+
 &dma {
 	status = "okay";
 	};
 
 &lcd_cam {
 	status = "okay";
-	cam-clk = <10000000>;
+	cam-clk = <16000000>;
 	pinctrl-0 = <&lcd_cam_default>;
 	pinctrl-names = "default";
 	source = <&ov3660>;

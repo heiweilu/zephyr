@@ -9,3 +9,12 @@ config VIDEO_OV3660
 	default y
 	help
 	  Enable driver for OV3660 CMOS digital image sensor device.
+
+config VIDEO_OV3660_COLOR_BAR_TEST
+	bool "OV3660 color bar test pattern"
+	depends on VIDEO_OV3660
+	default n
+	help
+	  Enable the OV3660 built-in color bar generator for board-specific
+	  diagnostics. This should only be enabled by the sample or board under
+	  test, not globally for all users of the driver.
