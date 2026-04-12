@@ -1,0 +1,58 @@
+/* CHD-ESP32-S3-BOX: OV3660 probe with shared I2C0 and XMCLK on IO39 */
+
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+
+	zephyr,user {
+		pwms = <&ledc0 0 100 PWM_POLARITY_NORMAL>;
+	};
+	};
+
+&usb_serial {
+	status = "okay";
+};
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO18>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	ledc0_default: ledc0_default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO39>;
+			output-enable;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+&ledc0 {
+	status = "okay";
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0: channel@0 {
+		reg = <0>;
+		timer = <0>;
+	};
+};
