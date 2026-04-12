@@ -1,0 +1,64 @@
+/* CHD-ESP32-S3-BOX: ES7210 ADC Microphone Test
+ * I2C0 — ES7210 register config (SCL=IO18, SDA=IO8, addr 0x40)
+ * I2S0 — Audio RX from ES7210 (MCLK=IO2, BCLK=IO17, WS=IO45, DIN=IO16)
+ *       (DOUT=IO15 also configured for clock generation)
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO18>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <I2S0_MCLK_GPIO2>,
+				 <I2S0_O_WS_GPIO45>,
+				 <I2S0_O_BCK_GPIO17>,
+				 <I2S0_O_SD_GPIO15>;
+			output-enable;
+		};
+		group2 {
+			pinmux = <I2S0_I_SD_GPIO16>;
+			input-enable;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+i2s_rxtx: &i2s0 {
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&dma {
+	status = "okay";
+};
