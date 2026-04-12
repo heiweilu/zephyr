@@ -1,0 +1,33 @@
+/* CHD-ESP32-S3-BOX: USB-Serial console + I2C0 (SCL=IO18, SDA=IO8) for ICM-42607-C */
+
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO18>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
