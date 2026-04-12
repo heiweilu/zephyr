@@ -14,19 +14,20 @@
 #define FRAME_BYTES (FRAME_WIDTH * FRAME_HEIGHT * 2)
 #define FRAME_BUFFER_COUNT 2
 #define BLK_PIN (47 - 32)
-#define SWAP_RGB565_FOR_DISPLAY 0
+#define DISPLAY_STACK_SIZE 4096
 
 static struct video_buffer *frame_buffers[FRAME_BUFFER_COUNT];
 
-static void swap_rgb565_bytes(struct video_buffer *vbuf)
-{
-	for (uint32_t index = 0; index + 1 < vbuf->bytesused; index += 2) {
-		uint8_t tmp = vbuf->buffer[index];
+/* Display thread: receives frames via message queue, writes to LCD, re-enqueues */
+K_MSGQ_DEFINE(display_msgq, sizeof(struct video_buffer *), 1, sizeof(void *));
+static K_THREAD_STACK_DEFINE(display_stack, DISPLAY_STACK_SIZE);
+static struct k_thread display_thread_data;
 
-		vbuf->buffer[index] = vbuf->buffer[index + 1];
-		vbuf->buffer[index + 1] = tmp;
-	}
-}
+struct display_ctx {
+	const struct device *display_dev;
+	const struct device *camera_dev;
+	struct video_format *fmt;
+};
 
 static void log_frame_samples(const struct video_buffer *vbuf, const struct video_format *fmt,
 			      uint32_t frame)
@@ -63,6 +64,33 @@ static int display_camera_frame(const struct device *display_dev,
 	return display_write(display_dev, 0, vbuf->line_offset, &desc, vbuf->buffer);
 }
 
+/* Display thread: dequeues frame from msgq, writes to LCD, re-enqueues to camera */
+static void display_thread_entry(void *p1, void *p2, void *p3)
+{
+	struct display_ctx *ctx = p1;
+	struct video_buffer *buf;
+	int ret;
+
+	while (1) {
+		ret = k_msgq_get(&display_msgq, &buf, K_FOREVER);
+		if (ret < 0) {
+			printk("display msgq get failed: %d\n", ret);
+			break;
+		}
+
+		ret = display_camera_frame(ctx->display_dev, buf, ctx->fmt);
+		if (ret < 0) {
+			printk("display_write failed: %d\n", ret);
+		}
+
+		ret = video_enqueue(ctx->camera_dev, buf);
+		if (ret < 0) {
+			printk("display re-enqueue failed: %d\n", ret);
+			break;
+		}
+	}
+}
+
 int main(void)
 {
 	const struct device *const camera_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
@@ -75,11 +103,12 @@ int main(void)
 		.height = FRAME_HEIGHT,
 		.pitch = FRAME_WIDTH * 2,
 	};
+	static struct display_ctx disp_ctx;
 	struct video_caps caps = {0};
 	struct video_buffer *captured = NULL;
 	int ret;
 
-	printk("\n*** CHD-ESP32-S3-BOX OV3660 Capture Test ***\n");
+	printk("\n*** CHD-ESP32-S3-BOX OV3660 Parallel Double-Buffer ***\n");
 
 	if (!device_is_ready(camera_dev)) {
 		printk("camera device not ready\n");
@@ -146,13 +175,23 @@ int main(void)
 		}
 	}
 
+	/* Start display thread before camera stream */
+	disp_ctx.display_dev = display_dev;
+	disp_ctx.camera_dev = camera_dev;
+	disp_ctx.fmt = &fmt;
+
+	k_thread_create(&display_thread_data, display_stack, DISPLAY_STACK_SIZE,
+			display_thread_entry, &disp_ctx, NULL, NULL,
+			K_PRIO_COOP(7), 0, K_NO_WAIT);
+	k_thread_name_set(&display_thread_data, "display");
+
 	ret = video_stream_start(camera_dev, VIDEO_BUF_TYPE_OUTPUT);
 	if (ret < 0) {
 		printk("video_stream_start failed: %d\n", ret);
 		return 0;
 	}
 
-	printk("stream started\n");
+	printk("stream started (parallel double-buffer)\n");
 
 	for (uint32_t frame = 0; ; frame++) {
 		ret = video_dequeue(camera_dev, &captured, K_FOREVER);
@@ -162,31 +201,16 @@ int main(void)
 		}
 
 		if ((frame % 30U) == 0U) {
-			printk("frame %u captured: %u bytes ts=%u first=%02x %02x %02x %02x\n",
-				frame,
-				captured->bytesused,
-				captured->timestamp,
-				captured->buffer[0],
-				captured->buffer[1],
-				captured->buffer[2],
-				captured->buffer[3]);
+			printk("frame %u captured: %u bytes ts=%u\n",
+				frame, captured->bytesused, captured->timestamp);
 			log_frame_samples(captured, &fmt, frame);
 		}
 
-		if (SWAP_RGB565_FOR_DISPLAY) {
-			swap_rgb565_bytes(captured);
-		}
-
-		ret = display_camera_frame(display_dev, captured, &fmt);
+		/* Hand buffer to display thread; camera can capture into the other buffer */
+		ret = k_msgq_put(&display_msgq, &captured, K_FOREVER);
 		if (ret < 0) {
-			printk("display_write failed: %d\n", ret);
-			break;
-		}
-
-		ret = video_enqueue(camera_dev, captured);
-		if (ret < 0) {
-			printk("frame requeue failed: %d\n", ret);
-			break;
+			printk("display msgq put failed: %d\n", ret);
+			video_enqueue(camera_dev, captured);
 		}
 	}
 

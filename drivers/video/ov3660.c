@@ -397,7 +397,7 @@ static int ov3660_configure_qvga_rgb565(const struct device *dev)
 	ret |= ov3660_write_reg(&cfg->i2c, OV3660_SC_PLLS_CTRL0, 0x00);
 	ret |= ov3660_write_reg(&cfg->i2c, OV3660_SC_PLLS_CTRL1, 0x08);
 	ret |= ov3660_write_reg(&cfg->i2c, OV3660_SC_PLLS_CTRL2, 0x11);
-	ret |= ov3660_write_reg(&cfg->i2c, OV3660_SC_PLLS_CTRL3, 0x02);
+	ret |= ov3660_write_reg(&cfg->i2c, OV3660_SC_PLLS_CTRL3, 0x00);
 	ret |= ov3660_write_reg(&cfg->i2c, OV3660_PCLK_RATIO, 0x04);
 	ret |= ov3660_write_reg(&cfg->i2c, OV3660_VFIFO_CTRL0C, 0x22);
 	ret |= ov3660_write_reg(&cfg->i2c, 0x5000, 0xa7);
