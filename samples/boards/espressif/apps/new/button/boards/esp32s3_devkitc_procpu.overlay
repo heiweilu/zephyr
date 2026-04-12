@@ -1,0 +1,24 @@
+/* CHD-ESP32-S3-BOX: USB-Serial console + Boot button on GPIO0 */
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+		boot_button: boot_button {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Boot Button (IO0)";
+		};
+	};
+
+	aliases {
+		sw0 = &boot_button;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
