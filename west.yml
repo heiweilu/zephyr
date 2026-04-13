@@ -138,6 +138,10 @@ manifest:
       path: tools/edtt
       groups:
         - tools
+    - name: esp32-nesemu
+      url: https://github.com/espressif/esp32-nesemu
+      revision: master
+      path: modules/esp32-nesemu
     - name: fatfs
       revision: 18ad3932f7f18b59abf99cb2f8a6cd5d6746cfe0
       path: modules/fs/fatfs
