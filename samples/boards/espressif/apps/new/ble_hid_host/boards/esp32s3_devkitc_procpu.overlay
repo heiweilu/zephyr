@@ -1,0 +1,16 @@
+/* Console via USB Serial/JTAG (COM5) */
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+/* Enable BLE HCI controller for ESP32-S3 */
+&esp32_bt_hci {
+	status = "okay";
+};
