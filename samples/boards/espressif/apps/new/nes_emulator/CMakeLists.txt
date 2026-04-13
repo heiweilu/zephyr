@@ -63,6 +63,7 @@ target_sources(app PRIVATE
     src/main.c
     src/osd.c
     src/compat.c
+    src/ble_hid.c
     ${CMAKE_CURRENT_BINARY_DIR}/rom.S
     ${NOFRENDO_SRCS})
 

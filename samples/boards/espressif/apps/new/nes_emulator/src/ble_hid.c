@@ -247,8 +247,8 @@ static uint32_t hid_to_lv_key(uint8_t kc, uint8_t modifiers)
 	switch (kc) {
 	case 0x4F: return LV_KEY_RIGHT;
 	case 0x50: return LV_KEY_LEFT;
-	case 0x51: return LV_KEY_NEXT;   /* Down → next focus */
-	case 0x52: return LV_KEY_PREV;   /* Up → prev focus */
+	case 0x51: return LV_KEY_DOWN;   /* Down */
+	case 0x52: return LV_KEY_UP;     /* Up */
 	case 0x28: return LV_KEY_ENTER;
 	case 0x29: return LV_KEY_ESC;
 	case 0x2A: return LV_KEY_BACKSPACE;

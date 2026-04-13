@@ -25,6 +25,7 @@
 #include <bitmap.h>
 #include <nesinput.h>
 #include <nofconfig.h>
+#include <event.h>
 
 /*
  * memguard.h (included by noftypes.h) unconditionally redefines malloc, free,
@@ -45,6 +46,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "ble_hid.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Constants                                                                  */
@@ -317,6 +319,10 @@ int osd_init(void)
 	}
 	display_blanking_off(s_display_dev);
 	printk("NES: display ready\n");
+	
+	/* Initialize Bluetooth HID Driver */
+	ble_hid_init();
+	
 	return 0;
 }
 
@@ -359,16 +365,47 @@ char *osd_newextension(char *string, char *ext)
 	return string;
 }
 
+static void handle_kb_event(struct kb_event *evt)
+{
+	int ev_idx = -1;
+	switch (evt->key) {
+	/* D-pad: WSAD or Arrow Keys */
+	case 17: /* LV_KEY_UP */
+	case 'w': ev_idx = event_joypad1_up; break;
+	case 18: /* LV_KEY_DOWN */
+	case 's': ev_idx = event_joypad1_down; break;
+	case 20: /* LV_KEY_LEFT */
+	case 'a': ev_idx = event_joypad1_left; break;
+	case 19: /* LV_KEY_RIGHT */
+	case 'd': ev_idx = event_joypad1_right; break;
+	/* Actions */
+	case 'k':
+	case 'z': ev_idx = event_joypad1_a; break;
+	case 'j':
+	case 'x': ev_idx = event_joypad1_b; break;
+	case 10: /* LV_KEY_ENTER */
+		ev_idx = event_joypad1_start; break;
+	case ' ': /* Space */
+		ev_idx = event_joypad1_select; break;
+	case 27: /* LV_KEY_ESC */
+		ev_idx = event_hard_reset; break;
+	}
+
+	if (ev_idx != -1) {
+		event_t evh = event_get(ev_idx);
+		if (evh) {
+			evh(evt->pressed ? INP_STATE_MAKE : INP_STATE_BREAK);
+		}
+	}
+}
+
 void osd_getinput(void)
 {
-	/*
-	 * Phase 1: no controller input (game runs but cannot be controlled).
-	 * Phase 2: read from BLE keyboard k_msgq and map HID keycodes:
-	 *   0x52 Up    → INP_PAD_UP,   0x51 Down  → INP_PAD_DOWN
-	 *   0x50 Left  → INP_PAD_LEFT, 0x4F Right → INP_PAD_RIGHT
-	 *   0x1D Z     → INP_PAD_A,    0x1B X     → INP_PAD_B
-	 *   0x29 Enter → INP_PAD_START, 0x2C Space → INP_PAD_SELECT
-	 */
+	struct kb_event evt;
+	/* Drain the BLE keyboard event queue */
+	while (k_msgq_get(&kb_events, &evt, K_NO_WAIT) == 0) {
+		handle_kb_event(&evt);
+	}
 }
 
 void osd_getmouse(int *x, int *y, int *button)
