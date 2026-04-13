@@ -1,4 +1,4 @@
-/* CHD-ESP32-S3-BOX: LVGL on ST7789V 2.8" 320x240 SPI Display */
+/* CHD-ESP32-S3-BOX: LVGL Demos on ST7789V 2.8" 320x240 SPI Display */
 
 #include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
 #include <dt-bindings/pinctrl/esp32s3-pinctrl.h>

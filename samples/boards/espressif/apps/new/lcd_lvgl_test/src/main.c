@@ -1,6 +1,6 @@
 /*
- * CHD-ESP32-S3-BOX: LVGL Hello World on ST7789V 320x240
- * Step 4.3 — LVGL integration test
+ * CHD-ESP32-S3-BOX: LVGL Demo on ST7789V 320x240
+ * Supports: Widgets demo, Benchmark, or simple Hello World
  */
 
 #include <zephyr/kernel.h>
@@ -9,6 +9,10 @@
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
 #include <lvgl.h>
+
+#if defined(CONFIG_LV_USE_DEMO_WIDGETS) || defined(CONFIG_LV_USE_DEMO_BENCHMARK)
+#include <lv_demos.h>
+#endif
 
 /* Backlight: IO47 = GPIO1 pin 15 */
 #define BLK_NODE DT_NODELABEL(gpio1)
@@ -19,7 +23,7 @@ int main(void)
 	const struct device *display_dev;
 	const struct device *gpio1_dev;
 
-	printk("=== LVGL Hello World Test ===\n");
+	printk("=== CHD-ESP32-S3-BOX LVGL Demo ===\n");
 
 	/* Backlight ON */
 	gpio1_dev = DEVICE_DT_GET(BLK_NODE);
@@ -37,31 +41,26 @@ int main(void)
 	}
 	printk("Display device: %s\n", display_dev->name);
 
-	/* Create LVGL label */
+#if defined(CONFIG_LV_USE_DEMO_WIDGETS)
+	printk("Running Widgets demo...\n");
+	lv_demo_widgets();
+#elif defined(CONFIG_LV_USE_DEMO_BENCHMARK)
+	printk("Running Benchmark demo...\n");
+	lv_demo_benchmark();
+#else
+	/* Fallback: simple Hello World */
 	lv_obj_t *label = lv_label_create(lv_screen_active());
 	lv_label_set_text(label, "Hello World!");
 	lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+#endif
 
-	/* Create counter label */
-	lv_obj_t *count_label = lv_label_create(lv_screen_active());
-	lv_obj_align(count_label, LV_ALIGN_BOTTOM_MID, 0, -10);
-
-	/* First render + turn on display */
 	lv_timer_handler();
 	display_blanking_off(display_dev);
 
 	printk("LVGL running...\n");
 
-	uint32_t count = 0;
-	char buf[32];
-
 	while (1) {
-		if ((count % 100) == 0U) {
-			snprintf(buf, sizeof(buf), "Count: %u", count / 100U);
-			lv_label_set_text(count_label, buf);
-		}
-		lv_timer_handler();
-		++count;
-		k_sleep(K_MSEC(10));
+		uint32_t sleep_ms = lv_timer_handler();
+		k_msleep(MIN(sleep_ms, INT32_MAX));
 	}
 }
