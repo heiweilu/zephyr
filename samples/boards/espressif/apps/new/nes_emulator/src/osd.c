@@ -64,6 +64,7 @@
  *   left_offset = (320 - 256) / 2 = 32
  */
 #define DISPLAY_X_OFFSET  32
+#define DISPLAY_WIDTH     320
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Private state                                                              */
@@ -318,6 +319,28 @@ int osd_init(void)
 		return -1;
 	}
 	display_blanking_off(s_display_dev);
+
+	/* Clear the side strips (32px each) to black so no garbage pixels show */
+	{
+		static uint16_t black_strip[DISPLAY_X_OFFSET]
+			__attribute__((section(".ext_ram.bss")));
+		memset(black_strip, 0, sizeof(black_strip));
+
+		struct display_buffer_descriptor strip_desc = {
+			.buf_size = sizeof(black_strip),
+			.width    = DISPLAY_X_OFFSET,
+			.height   = 1,
+			.pitch    = DISPLAY_X_OFFSET,
+		};
+		for (int y = 0; y < NES_HEIGHT; y++) {
+			display_write(s_display_dev, 0, y,
+				      &strip_desc, black_strip);
+			display_write(s_display_dev,
+				      DISPLAY_X_OFFSET + NES_WIDTH, y,
+				      &strip_desc, black_strip);
+		}
+	}
+
 	printk("NES: display ready\n");
 	
 	/* Initialize Bluetooth HID Driver */
