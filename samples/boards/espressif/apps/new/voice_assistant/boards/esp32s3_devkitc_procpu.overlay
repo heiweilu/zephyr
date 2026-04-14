@@ -1,0 +1,86 @@
+/* Voice Assistant: ES8311 DAC + ES7210 ADC + PA + BOOT Button + USB Console
+ *
+ * I2C0 — ES8311 (0x18) + ES7210 (0x40) register config (SCL=IO18, SDA=IO8)
+ * I2S0 — Audio TX (speaker via ES8311) + RX (mic via ES7210)
+ *         MCLK=IO2, BCLK=IO17, WS=IO45, DOUT=IO15, DIN=IO16
+ * PA   — GPIO46 (gpio1 pin 14), active-high
+ * BOOT — GPIO0 (gpio0 pin 0), active-low, push-to-talk
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		pa_enable: pa {
+			gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+		boot_button: boot_button {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT Button";
+		};
+	};
+
+	aliases {
+		sw0 = &boot_button;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO18>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <I2S0_MCLK_GPIO2>,
+				 <I2S0_O_WS_GPIO45>,
+				 <I2S0_O_BCK_GPIO17>,
+				 <I2S0_O_SD_GPIO15>;
+			output-enable;
+		};
+		group2 {
+			pinmux = <I2S0_I_SD_GPIO16>;
+			input-enable;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+i2s_rxtx: &i2s0 {
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&dma {
+	status = "okay";
+};
