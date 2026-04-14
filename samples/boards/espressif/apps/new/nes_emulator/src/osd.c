@@ -43,9 +43,12 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/i2s.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
 #include "ble_hid.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -66,11 +69,69 @@
 #define DISPLAY_X_OFFSET  32
 #define DISPLAY_WIDTH     320
 
+/* ── Audio: ES8311 via I2C + I2S ─────────────────────────────────────────── */
+#define ES8311_ADDR  0x18
+
+#define ES8311_RESET_REG00         0x00
+#define ES8311_CLK_MANAGER_REG01   0x01
+#define ES8311_CLK_MANAGER_REG02   0x02
+#define ES8311_CLK_MANAGER_REG03   0x03
+#define ES8311_CLK_MANAGER_REG04   0x04
+#define ES8311_CLK_MANAGER_REG05   0x05
+#define ES8311_CLK_MANAGER_REG06   0x06
+#define ES8311_CLK_MANAGER_REG07   0x07
+#define ES8311_CLK_MANAGER_REG08   0x08
+#define ES8311_SDPIN_REG09         0x09
+#define ES8311_SDPOUT_REG0A        0x0A
+#define ES8311_SYSTEM_REG0D        0x0D
+#define ES8311_SYSTEM_REG0E        0x0E
+#define ES8311_SYSTEM_REG12        0x12
+#define ES8311_SYSTEM_REG13        0x13
+#define ES8311_ADC_REG1C           0x1C
+#define ES8311_DAC_REG31           0x31
+#define ES8311_DAC_REG32           0x32
+#define ES8311_DAC_REG37           0x37
+
+#define AUDIO_SAMPLE_RATE   22050
+#define AUDIO_CHANNELS      2
+#define AUDIO_BITS          16
+#define AUDIO_BLOCK_MS      20
+/* mono samples per block: 22050 / 50 = 441 (exact, no drift) */
+#define AUDIO_MONO_SAMPLES  (AUDIO_SAMPLE_RATE / (1000 / AUDIO_BLOCK_MS))
+/* stereo samples per block (for I2S: L+R interleaved) */
+#define AUDIO_STEREO_SAMPLES (AUDIO_MONO_SAMPLES * AUDIO_CHANNELS)
+#define AUDIO_BLOCK_SIZE    (AUDIO_STEREO_SAMPLES * sizeof(int16_t))
+#define AUDIO_BLOCK_COUNT   8
+
+#define I2S_TX_NODE   DT_NODELABEL(i2s_rxtx)
+#define PA_NODE       DT_NODELABEL(pa_gpio)
+
+K_MEM_SLAB_DEFINE_STATIC(audio_tx_slab, AUDIO_BLOCK_SIZE, AUDIO_BLOCK_COUNT, 4);
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Private state                                                              */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
 static const struct device *s_display_dev;
+
+/* ── Audio state ─────────────────────────────────────────────────────────── */
+static const struct device *s_i2s_dev;
+static void (*volatile s_apu_process)(void *buffer, int num_samples);
+static volatile bool s_audio_ready;
+static int16_t s_mono_buf[AUDIO_MONO_SAMPLES];
+
+/* k_work + k_timer: timer fires every AUDIO_BLOCK_MS, work handler generates
+ * one audio block and pushes it to I2S.  Runs in the system workqueue thread
+ * which is independent of the NES emulation main thread.  */
+static void audio_work_handler(struct k_work *work);
+static K_WORK_DEFINE(audio_work, audio_work_handler);
+
+static void audio_timer_cb(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	k_work_submit(&audio_work);
+}
+static K_TIMER_DEFINE(audio_timer, audio_timer_cb, NULL);
 
 /*
  * Large buffers placed in PSRAM (.ext_ram.bss) to avoid overflowing the
@@ -264,6 +325,8 @@ static void zephyr_custom_blit(bitmap_t *bitmap, int num_dirties,
 
       display_write(s_display_dev, DISPLAY_X_OFFSET, y_offset, &buf_desc,
                     s_framebuf);
+
+      /* Audio runs via k_timer + k_work — nothing to do here */
 }
 
 static viddriver_t s_zephyr_driver = {
@@ -280,13 +343,174 @@ static viddriver_t s_zephyr_driver = {
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
+/*  Audio: ES8311 DAC + I2S                                                    */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+static int es8311_write_reg(const struct device *i2c, uint8_t reg, uint8_t val)
+{
+	uint8_t buf[2] = {reg, val};
+	return i2c_write(i2c, buf, 2, ES8311_ADDR);
+}
+
+static int es8311_codec_init(const struct device *i2c)
+{
+	int ret;
+
+	/* Reset */
+	ret = es8311_write_reg(i2c, ES8311_RESET_REG00, 0x1F);
+	if (ret) return ret;
+	k_msleep(20);
+	es8311_write_reg(i2c, ES8311_RESET_REG00, 0x00);
+	es8311_write_reg(i2c, ES8311_RESET_REG00, 0x80);
+	k_msleep(5);
+
+	/* Clock: MCLK from pin, enable all */
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG01, 0x3F);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG02, 0x00);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG03, 0x10);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG04, 0x10);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG05, 0x00);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG06, 0x03);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG07, 0x00);
+	es8311_write_reg(i2c, ES8311_CLK_MANAGER_REG08, 0xFF);
+
+	/* I2S: slave, 16-bit */
+	es8311_write_reg(i2c, ES8311_SDPIN_REG09, 0x0C);
+	es8311_write_reg(i2c, ES8311_SDPOUT_REG0A, 0x0C);
+
+	/* Power up analog */
+	es8311_write_reg(i2c, ES8311_SYSTEM_REG0D, 0x01);
+	es8311_write_reg(i2c, ES8311_SYSTEM_REG0E, 0x02);
+	es8311_write_reg(i2c, ES8311_SYSTEM_REG12, 0x00);
+	es8311_write_reg(i2c, ES8311_SYSTEM_REG13, 0x10);
+
+	/* ADC/DAC settings */
+	es8311_write_reg(i2c, ES8311_ADC_REG1C, 0x6A);
+	es8311_write_reg(i2c, ES8311_DAC_REG37, 0x08);
+	es8311_write_reg(i2c, ES8311_DAC_REG32, 0xC0);
+	es8311_write_reg(i2c, ES8311_DAC_REG31, 0x00);
+
+	return 0;
+}
+
+static int audio_hw_init(void)
+{
+	int ret;
+
+	/* I2C — ES8311 codec init */
+	const struct device *i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+	if (!device_is_ready(i2c)) {
+		printk("NES audio: I2C not ready\n");
+		return -1;
+	}
+	ret = es8311_codec_init(i2c);
+	if (ret) {
+		printk("NES audio: ES8311 init failed: %d\n", ret);
+		return -1;
+	}
+	printk("NES audio: ES8311 OK\n");
+
+	/* PA enable (IO46 = GPIO1 pin 14) */
+	static const struct gpio_dt_spec pa = GPIO_DT_SPEC_GET(PA_NODE, gpios);
+	if (gpio_is_ready_dt(&pa)) {
+		gpio_pin_configure_dt(&pa, GPIO_OUTPUT_ACTIVE);
+		gpio_pin_set_dt(&pa, 1);
+		printk("NES audio: PA enabled\n");
+	}
+
+	/* I2S TX */
+	s_i2s_dev = DEVICE_DT_GET(I2S_TX_NODE);
+	if (!device_is_ready(s_i2s_dev)) {
+		printk("NES audio: I2S not ready\n");
+		return -1;
+	}
+
+	struct i2s_config cfg = {
+		.word_size   = AUDIO_BITS,
+		.channels    = AUDIO_CHANNELS,
+		.format      = I2S_FMT_DATA_FORMAT_I2S,
+		.options     = I2S_OPT_BIT_CLK_MASTER | I2S_OPT_FRAME_CLK_MASTER,
+		.frame_clk_freq = AUDIO_SAMPLE_RATE,
+		.mem_slab    = &audio_tx_slab,
+		.block_size  = AUDIO_BLOCK_SIZE,
+		.timeout     = 0,       /* non-blocking: work handler must not stall */
+	};
+
+	ret = i2s_configure(s_i2s_dev, I2S_DIR_TX, &cfg);
+	if (ret) {
+		printk("NES audio: I2S config failed: %d\n", ret);
+		return -1;
+	}
+	printk("NES audio: I2S TX %dHz %d-bit %d-ch\n",
+	       AUDIO_SAMPLE_RATE, AUDIO_BITS, AUDIO_CHANNELS);
+
+	s_audio_ready = true;
+
+	/* Start the periodic audio timer — first tick deferred until the
+	 * APU process function is registered via osd_setsound(). */
+	k_timer_start(&audio_timer, K_MSEC(AUDIO_BLOCK_MS),
+		      K_MSEC(AUDIO_BLOCK_MS));
+
+	printk("NES audio: ready\n");
+	return 0;
+}
+
+/*
+ * Work handler invoked every AUDIO_BLOCK_MS (10 ms) by audio_timer.
+ * Runs in the system workqueue thread — guaranteed CPU time independent
+ * of the NES emulation main loop.
+ */
+static void audio_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	static bool i2s_started;
+
+	if (!s_audio_ready || !s_apu_process) {
+		return;
+	}
+
+	void *block;
+	if (k_mem_slab_alloc(&audio_tx_slab, &block, K_NO_WAIT) != 0) {
+		return;  /* all blocks in I2S queue — skip, DMA will free them */
+	}
+
+	s_apu_process(s_mono_buf, AUDIO_MONO_SAMPLES);
+
+	int16_t *stereo = (int16_t *)block;
+	for (int i = 0; i < AUDIO_MONO_SAMPLES; i++) {
+		stereo[i * 2]     = s_mono_buf[i];
+		stereo[i * 2 + 1] = s_mono_buf[i];
+	}
+
+	int ret = i2s_write(s_i2s_dev, block, AUDIO_BLOCK_SIZE);
+	if (ret == -EIO) {
+		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_PREPARE);
+		ret = i2s_write(s_i2s_dev, block, AUDIO_BLOCK_SIZE);
+		if (ret) {
+			k_mem_slab_free(&audio_tx_slab, block);
+			return;
+		}
+		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
+		i2s_started = true;
+		return;
+	} else if (ret) {
+		k_mem_slab_free(&audio_tx_slab, block);
+		return;
+	}
+
+	if (!i2s_started) {
+		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
+		i2s_started = true;
+	}
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
 /*  OSD interface implementations                                              */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
 void osd_setsound(void (*playfunc)(void *buffer, int size))
 {
-	/* Phase 1: audio not implemented */
-	ARG_UNUSED(playfunc);
+	s_apu_process = playfunc;
 }
 
 void osd_getvideoinfo(vidinfo_t *info)
@@ -298,8 +522,8 @@ void osd_getvideoinfo(vidinfo_t *info)
 
 void osd_getsoundinfo(sndinfo_t *info)
 {
-	info->sample_rate = 22050;
-	info->bps         = 16;
+	info->sample_rate = AUDIO_SAMPLE_RATE;
+	info->bps         = AUDIO_BITS;
 }
 
 int osd_init(void)
@@ -345,6 +569,9 @@ int osd_init(void)
 	
 	/* Initialize Bluetooth HID Driver */
 	ble_hid_init();
+
+	/* Initialize Audio (ES8311 + I2S) */
+	audio_hw_init();
 	
 	return 0;
 }
