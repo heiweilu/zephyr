@@ -17,6 +17,7 @@
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/settings/settings.h>
 
 #include "ble_hid.h"
 
@@ -186,37 +187,14 @@ static const char *type_str(enum hid_device_type t)
 static void start_scan(void);
 static void start_hid_discovery(struct hid_device *dev);
 
-/* ── Bond cleanup ────────────────────────────────────── */
+/* ── Subscribe response callback ─────────────────────── */
 
-#define MAX_STALE_BONDS 4
-static bt_addr_le_t stale_bonds[MAX_STALE_BONDS];
-static int stale_bond_count;
-
-static void find_stale_bond_cb(const struct bt_bond_info *info,
-			       void *user_data)
+static void subscribe_cb(struct bt_conn *conn, uint8_t err,
+			  struct bt_gatt_subscribe_params *params)
 {
-	for (int i = 0; i < MAX_HID_DEVICES; i++) {
-		if (hid_devices[i].conn &&
-		    bt_addr_le_eq(&info->addr,
-				  bt_conn_get_dst(hid_devices[i].conn))) {
-			return;
-		}
-	}
-	if (stale_bond_count < MAX_STALE_BONDS) {
-		bt_addr_le_copy(&stale_bonds[stale_bond_count++],
-				&info->addr);
-	}
-}
-
-static void cleanup_stale_bonds(void)
-{
-	stale_bond_count = 0;
-	bt_foreach_bond(BT_ID_DEFAULT, find_stale_bond_cb, NULL);
-	for (int i = 0; i < stale_bond_count; i++) {
-		char addr[BT_ADDR_LE_STR_LEN];
-		bt_addr_le_to_str(&stale_bonds[i], addr, sizeof(addr));
-		printk("[BLE] Removing stale bond: %s\n", addr);
-		bt_unpair(BT_ID_DEFAULT, &stale_bonds[i]);
+	if (err) {
+		printk("[KB] CCC write err=%u handle=%u\n",
+		       err, params->ccc_handle);
 	}
 }
 
@@ -535,7 +513,7 @@ static uint8_t discover_func(struct bt_conn *conn,
 		}
 		if (uuid16 == BT_UUID_HIDS_REPORT_VAL &&
 		    (chrc->properties & BT_GATT_CHRC_NOTIFY) &&
-		    dev->report_count < MAX_REPORT_CHARS) {
+		    dev->report_count < 1) {  /* Only subscribe to 1st report for keyboards */
 			dev->report_handles[dev->report_count++] =
 				chrc->value_handle;
 		}
@@ -554,8 +532,10 @@ static uint8_t discover_func(struct bt_conn *conn,
 		int idx = dev->report_try_idx;
 		struct bt_gatt_subscribe_params *sp = &dev->sub_params[idx];
 		sp->notify = notify_func;
+		sp->subscribe = subscribe_cb;
 		sp->value = BT_GATT_CCC_NOTIFY;
 		sp->ccc_handle = attr->handle;
+		atomic_set_bit(sp->flags, BT_GATT_SUBSCRIBE_FLAG_VOLATILE);
 
 		err = bt_gatt_subscribe(conn, sp);
 		if (err && err != -EALREADY) {
@@ -876,8 +856,8 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 {
-	printk("[BLE] Pairing failed, reason %d\n", reason);
-	cleanup_stale_bonds();
+	printk("[BLE] Pairing failed, reason %d — clearing all bonds\n", reason);
+	bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
 }
 
 static struct bt_conn_auth_cb auth_cb = {
@@ -905,7 +885,8 @@ int ble_hid_init(void)
 	}
 	printk("[BLE] Bluetooth initialized\n");
 
-	bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+	settings_load();
+
 	bt_conn_auth_cb_register(&auth_cb);
 	bt_conn_auth_info_cb_register(&auth_info_cb);
 

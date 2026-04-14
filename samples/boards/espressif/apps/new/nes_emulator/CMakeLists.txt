@@ -44,12 +44,12 @@ set(NOFRENDO_INCS
     ${NOFRENDO_DIR}/sndhrdw)
 
 # ── NES ROM binary embedded via INCBIN ───────────────────────────────────────
-set(NES_ROM_FILE "${CMAKE_CURRENT_LIST_DIR}/rom/nestest.nes")
+set(NES_ROM_FILE "${CMAKE_CURRENT_LIST_DIR}/rom/sbp.nes")
 if(NOT EXISTS "${NES_ROM_FILE}")
     message(FATAL_ERROR
         "NES ROM not found: ${NES_ROM_FILE}\n"
-        "Place any iNES format ROM as:  nes_emulator/rom/nestest.nes\n"
-        "  e.g. nestest.nes from: https://www.qmtpro.com/~nes/misc/nestest.nes")
+        "Place any iNES format ROM as:  nes_emulator/rom/roborun.nes\n"
+        "  e.g. RoboRun-NES_1.1.nes from: https://github.com/jones-hm/roborun-nes/releases")
 endif()
 
 # Generate rom.S with the absolute ROM path substituted
