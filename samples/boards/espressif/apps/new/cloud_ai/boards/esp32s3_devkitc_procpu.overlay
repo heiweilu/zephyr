@@ -1,0 +1,12 @@
+/* CHD-ESP32-S3-BOX: USB-Serial console */
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};

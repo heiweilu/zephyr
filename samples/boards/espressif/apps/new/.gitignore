@@ -1,1 +1,3 @@
 doc/
+# Secrets (API keys, WiFi credentials)
+**/secrets.h
