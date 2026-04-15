@@ -684,6 +684,7 @@ static int send_voice_request(int sock, const char *b64_audio, size_t b64_len)
 	static const char json_prefix[] =
 		"{\"model\":\"" AI_MODEL "\","
 		"\"stream\":true,"
+		"\"enable_thinking\":false,"
 		"\"modalities\":[\"text\",\"audio\"],"
 		"\"audio\":{\"voice\":\"Tina\",\"format\":\"wav\"},"
 		"\"messages\":["
@@ -800,7 +801,9 @@ int main(void)
 				"\"stream\":true,"
 				"\"messages\":["
 				"{\"role\":\"user\",\"content\":\"Say hello in one sentence.\"}"
-				"]}";
+				"],"
+				"\"enable_thinking\":false"
+				"}";
 
 			char hdr[512];
 			int hlen = snprintk(hdr, sizeof(hdr),
