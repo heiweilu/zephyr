@@ -112,3 +112,5 @@ SysbuildKconfigBasicNoModules.txt
 TextEncoding.txt
 YAMLLint.txt
 ZephyrModuleFile.txt
+
+.github/
