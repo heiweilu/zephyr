@@ -2,15 +2,21 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(launcher)
 
+zephyr_compile_definitions(MBEDTLS_TLS1_2_SIG_ALG_RSA_PSS_ENABLED)
+zephyr_compile_definitions(MBEDTLS_X509_RSASSA_PSS_SUPPORT)
+
 # ── Core sources ──
 target_sources(app PRIVATE
     src/main.c
     src/app_manager.c
     src/launcher_ui.c
     src/ble_hid.c
+    src/ai_service.c
+    src/audio.c
+    src/base64.c
 )
 
-# ── Placeholder app sources ──
+# ── App sources ──
 target_sources(app PRIVATE
     src/apps/app_ai_assistant.c
     src/apps/app_camera.c

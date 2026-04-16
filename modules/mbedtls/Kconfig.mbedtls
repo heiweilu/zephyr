@@ -522,6 +522,14 @@ config MBEDTLS_SSL_EXTENDED_MASTER_SECRET
 	  which ensures that master secrets are different for every
 	  connection and every session.
 
+config MBEDTLS_SSL_CLIENT_COMPRESSED_POINT_FORMATS
+	bool "TLS client advertises compressed EC point formats"
+	depends on MBEDTLS_TLS_VERSION_1_2 && MBEDTLS_ECP_C
+	help
+	  Make the TLS 1.2 client supported_point_formats extension advertise
+	  compressed EC point formats in addition to uncompressed. This can
+	  improve interoperability with some Internet-facing TLS servers.
+
 choice MBEDTLS_PSA_CRYPTO_RNG_SOURCE
 	prompt "Select random source for built-in PSA crypto"
 	depends on MBEDTLS_PSA_CRYPTO_C

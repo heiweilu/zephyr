@@ -22,6 +22,7 @@
 #include "ble_hid.h"
 #include "app_manager.h"
 #include "launcher_ui.h"
+#include "ai_service.h"
 
 /* ── App module declarations ─────────────────────────── */
 
@@ -157,6 +158,12 @@ int main(void)
 	/* 8. Build launcher home screen */
 	launcher_ui_init();
 
+#if defined(CONFIG_AI_AUTO_DEBUG)
+	/* Auto-debug: start AI service immediately (no need to open the app) */
+	printk("[AUTO-DEBUG] Starting AI service automatically...\n");
+	ai_service_init();
+#endif
+
 	/* 9. First render + display on */
 	lv_timer_handler();
 	display_blanking_off(display);
@@ -168,7 +175,17 @@ int main(void)
 		check_global_nav();
 
 		/* Update status bar */
-		if (g_mouse.connected && g_kb_connected) {
+		if (ai_service_wifi_connected()) {
+			if (g_mouse.connected && g_kb_connected) {
+				launcher_ui_update_status("WiFi+M+KB");
+			} else if (g_mouse.connected) {
+				launcher_ui_update_status("WiFi+Mouse");
+			} else if (g_kb_connected) {
+				launcher_ui_update_status("WiFi+KB");
+			} else {
+				launcher_ui_update_status("WiFi OK");
+			}
+		} else if (g_mouse.connected && g_kb_connected) {
 			launcher_ui_update_status("Mouse+KB");
 		} else if (g_mouse.connected) {
 			char buf[48];
