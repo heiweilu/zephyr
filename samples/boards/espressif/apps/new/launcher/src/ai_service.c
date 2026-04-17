@@ -45,9 +45,20 @@ LOG_MODULE_REGISTER(ai_service, LOG_LEVEL_INF);
 #define AI_MODEL  "qwen3.5-omni-flash"
 
 /* Qwen-Omni Realtime WebSocket API */
-#define RT_MODEL  "qwen-omni-turbo-realtime"
+#define RT_MODEL  "qwen3.5-omni-flash-realtime"
 #define RT_WS_PATH "/api-ws/v1/realtime?model=" RT_MODEL
-#define RT_VOICE  "Cherry"
+#define RT_VOICE  "Serena"
+#define RT_MAX_TOKENS 48
+#define RT_TEMPERATURE_JSON "0.2"
+
+/* Plan-A pipeline step 1: Qwen3-ASR-Flash one-shot recognition over the
+ * native DashScope multimodal-generation endpoint (NOT OpenAI compat).
+ * Set AI_DEBUG_PIPELINE_ASR to 1 to run ASR before Realtime and log the
+ * recognized text. Existing Realtime flow is unchanged.
+ */
+#define ASR_MODEL "qwen3-asr-flash"
+#define ASR_URL   "/api/v1/services/aigc/multimodal-generation/generation"
+#define AI_DEBUG_PIPELINE_ASR 1
 
 /* Match the known-good OpenSSL probe as closely as the socket API allows. */
 #define AI_TLS_CIPHERSUITE_ECDHE_RSA_AES128_GCM_SHA256 0xC02F
@@ -67,12 +78,17 @@ static const int ai_tls_ciphersuites[] = {
 #define MAX_B64_WAV_SIZE      220000
 #define MAX_RSP_AUDIO_B64     512000
 #define MAX_RSP_PCM_24K       (15 * 24000)  /* 15s at 24kHz */
+#define RT_STREAM_PREBUFFER_SAMPLES  (PLAYBACK_SAMPLE_RATE * 2)
+#define RT_STREAM_FEED_SAMPLES       (PLAYBACK_SAMPLE_RATE / 10)
 
 /* ================================================================
  *  PSRAM large buffers (.ext_ram.bss)
  * ================================================================ */
 
 static int16_t record_pcm[MAX_RECORD_SAMPLES]
+		__attribute__((section(".ext_ram.bss")));
+
+static int16_t response_pcm[MAX_PLAYBACK_SAMPLES]
 		__attribute__((section(".ext_ram.bss")));
 
 static char b64_wav_buf[MAX_B64_WAV_SIZE]
@@ -94,6 +110,8 @@ static char sse_line_buf[SSE_LINE_BUF_SIZE]
 /* These need fast access but move to PSRAM to save DRAM */
 static uint8_t http_recv_buf[HTTP_RECV_BUF_SIZE]
 		__attribute__((section(".ext_ram.bss")));
+static uint8_t ws_tx_mask_buf[4096]
+		__attribute__((section(".ext_ram.bss")));
 static size_t  sse_line_len;
 
 static volatile enum ai_state current_state = AI_STATE_INIT;
@@ -111,6 +129,206 @@ static volatile int msg_count;
 
 /* WiFi connected flag */
 static volatile bool wifi_ok;
+
+struct rt_playback_state {
+	bool session_active;
+	bool producer_done;
+	bool playback_started;
+	bool stream_failed;
+	int available_samples;
+	int consumed_samples;
+	int64_t first_delta_ms;
+};
+
+static struct rt_playback_state rt_playback;
+static K_MUTEX_DEFINE(rt_playback_lock);
+static K_SEM_DEFINE(rt_playback_data_sem, 0, 1);
+static K_SEM_DEFINE(rt_playback_done_sem, 0, 1);
+
+#define RT_PLAYBACK_THREAD_STACK_SIZE 4096
+K_THREAD_STACK_DEFINE(rt_playback_thread_stack,
+		      RT_PLAYBACK_THREAD_STACK_SIZE);
+static struct k_thread rt_playback_thread_data;
+
+static void rt_playback_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	while (1) {
+		k_sem_take(&rt_playback_data_sem, K_FOREVER);
+
+		while (1) {
+			bool should_start = false;
+			bool should_stop = false;
+			int chunk_offset = 0;
+			int chunk_samples = 0;
+			int buffered_samples = 0;
+			int64_t start_delay_ms = 0;
+
+			k_mutex_lock(&rt_playback_lock, K_FOREVER);
+
+			if (!rt_playback.session_active) {
+				k_mutex_unlock(&rt_playback_lock);
+				break;
+			}
+
+			buffered_samples = rt_playback.available_samples -
+						  rt_playback.consumed_samples;
+
+			if (!rt_playback.playback_started) {
+				if (buffered_samples >= RT_STREAM_PREBUFFER_SAMPLES ||
+				    (rt_playback.producer_done &&
+				     buffered_samples > 0)) {
+					rt_playback.playback_started = true;
+					should_start = true;
+					if (rt_playback.first_delta_ms > 0)
+						start_delay_ms =
+							k_uptime_get() -
+							rt_playback.first_delta_ms;
+				} else if (rt_playback.producer_done &&
+					   buffered_samples == 0) {
+					rt_playback.session_active = false;
+					k_mutex_unlock(&rt_playback_lock);
+					k_sem_give(&rt_playback_done_sem);
+					break;
+				} else {
+					k_mutex_unlock(&rt_playback_lock);
+					break;
+				}
+			}
+
+			buffered_samples = rt_playback.available_samples -
+						  rt_playback.consumed_samples;
+			if (buffered_samples > 0 && !rt_playback.stream_failed) {
+				chunk_offset = rt_playback.consumed_samples;
+				chunk_samples = buffered_samples > RT_STREAM_FEED_SAMPLES
+					? RT_STREAM_FEED_SAMPLES
+					: buffered_samples;
+				rt_playback.consumed_samples += chunk_samples;
+			} else if (rt_playback.producer_done) {
+				should_stop = rt_playback.playback_started &&
+					      !rt_playback.stream_failed;
+				rt_playback.session_active = false;
+			}
+
+			k_mutex_unlock(&rt_playback_lock);
+
+			if (should_start) {
+				int ret = audio_stream_start();
+
+				if (ret) {
+					LOG_ERR("Realtime: buffered playback start failed: %d",
+						ret);
+					k_mutex_lock(&rt_playback_lock, K_FOREVER);
+					rt_playback.stream_failed = true;
+					rt_playback.session_active = false;
+					k_mutex_unlock(&rt_playback_lock);
+					k_sem_give(&rt_playback_done_sem);
+					break;
+				}
+
+				current_state = AI_STATE_PLAYING;
+				LOG_INF("Realtime: buffered playback started "
+					"(%d samples buffered = %.2fs, %lld ms after first delta)",
+					buffered_samples,
+					(float)buffered_samples /
+					PLAYBACK_SAMPLE_RATE,
+					(long long)start_delay_ms);
+			}
+
+			if (chunk_samples > 0) {
+				int fed = audio_stream_feed(response_pcm + chunk_offset,
+							  chunk_samples);
+
+				if (fed < chunk_samples) {
+					LOG_WRN("Realtime: buffered playback short feed "
+						"(%d/%d samples)",
+						fed, chunk_samples);
+				}
+
+				k_mutex_lock(&rt_playback_lock, K_FOREVER);
+				buffered_samples = rt_playback.available_samples -
+						  rt_playback.consumed_samples;
+				should_stop = rt_playback.producer_done &&
+					      buffered_samples == 0;
+				if (should_stop)
+					rt_playback.session_active = false;
+				k_mutex_unlock(&rt_playback_lock);
+			}
+
+			if (should_stop) {
+				audio_stream_stop();
+				LOG_INF("Realtime: buffered playback complete");
+				k_sem_give(&rt_playback_done_sem);
+				break;
+			}
+
+			if (chunk_samples == 0) {
+				break;
+			}
+		}
+	}
+}
+
+static void rt_playback_begin(void)
+{
+	k_sem_reset(&rt_playback_data_sem);
+	k_sem_reset(&rt_playback_done_sem);
+
+	k_mutex_lock(&rt_playback_lock, K_FOREVER);
+	memset(&rt_playback, 0, sizeof(rt_playback));
+	rt_playback.session_active = true;
+	k_mutex_unlock(&rt_playback_lock);
+}
+
+static void rt_playback_note_first_delta(void)
+{
+	k_mutex_lock(&rt_playback_lock, K_FOREVER);
+	if (rt_playback.first_delta_ms == 0)
+		rt_playback.first_delta_ms = k_uptime_get();
+	k_mutex_unlock(&rt_playback_lock);
+}
+
+static int rt_playback_append(const int16_t *samples, int count)
+{
+	int copy = 0;
+
+	k_mutex_lock(&rt_playback_lock, K_FOREVER);
+	if (rt_playback.available_samples < MAX_PLAYBACK_SAMPLES) {
+		int space = MAX_PLAYBACK_SAMPLES - rt_playback.available_samples;
+
+		copy = count < space ? count : space;
+		if (copy > 0) {
+			memcpy(response_pcm + rt_playback.available_samples,
+			       samples, copy * sizeof(int16_t));
+			rt_playback.available_samples += copy;
+		}
+	}
+	k_mutex_unlock(&rt_playback_lock);
+
+	if (copy > 0)
+		k_sem_give(&rt_playback_data_sem);
+
+	return copy;
+}
+
+static void rt_playback_finish(bool *stream_failed)
+{
+	k_mutex_lock(&rt_playback_lock, K_FOREVER);
+	rt_playback.producer_done = true;
+	k_mutex_unlock(&rt_playback_lock);
+
+	k_sem_give(&rt_playback_data_sem);
+	k_sem_take(&rt_playback_done_sem, K_FOREVER);
+
+	if (stream_failed != NULL) {
+		k_mutex_lock(&rt_playback_lock, K_FOREVER);
+		*stream_failed = rt_playback.stream_failed;
+		k_mutex_unlock(&rt_playback_lock);
+	}
+}
 
 /* ================================================================
  *  BOOT button
@@ -582,6 +800,68 @@ static int sock_send_all(int sock, const char *data, size_t len)
 	return 0;
 }
 
+static int trim_recorded_pcm(int16_t *pcm, int num_samples)
+{
+	const int threshold = 600;
+	const int margin = RECORD_SAMPLE_RATE / 8;
+	int first = -1;
+	int last = -1;
+
+	for (int i = 0; i < num_samples; i++) {
+		int sample = pcm[i];
+		if (sample < 0) {
+			sample = -sample;
+		}
+		if (sample >= threshold) {
+			first = i;
+			break;
+		}
+	}
+
+	if (first < 0) {
+		return num_samples;
+	}
+
+	for (int i = num_samples - 1; i >= 0; i--) {
+		int sample = pcm[i];
+		if (sample < 0) {
+			sample = -sample;
+		}
+		if (sample >= threshold) {
+			last = i;
+			break;
+		}
+	}
+
+	if (last < first) {
+		return num_samples;
+	}
+
+	if (first > margin) {
+		first -= margin;
+	} else {
+		first = 0;
+	}
+	if (last + margin < num_samples) {
+		last += margin;
+	} else {
+		last = num_samples - 1;
+	}
+
+	int trimmed = last - first + 1;
+	if (trimmed <= 0 || trimmed >= num_samples) {
+		return num_samples;
+	}
+
+	memmove(pcm, pcm + first, trimmed * sizeof(*pcm));
+	LOG_INF("Trimmed audio: %d -> %d samples (%.1fs -> %.1fs)",
+		num_samples, trimmed,
+		(float)num_samples / RECORD_SAMPLE_RATE,
+		(float)trimmed / RECORD_SAMPLE_RATE);
+
+	return trimmed;
+}
+
 /* ================================================================
  *  JSON helper
  * ================================================================ */
@@ -694,6 +974,37 @@ static void process_sse_event(const char *json_str)
 	}
 }
 
+/* Debug-only: when set, dump every "data:" SSE line raw before parsing. */
+static bool dbg_dump_sse;
+
+/* Plan-A pipeline step 1: when set, parse DashScope native ASR SSE
+ * (cumulative "content":[{"text":"..."}] format) instead of the OpenAI
+ * compat "content":"..." format used by chat/completions.
+ */
+static bool asr_mode;
+
+static void asr_extract_text(const char *json_str)
+{
+	static const char pat[] = "\"content\":[{\"text\":\"";
+	const char *p = strstr(json_str, pat);
+	if (!p) return;
+
+	p += sizeof(pat) - 1;
+	const char *e = p;
+	while (*e && *e != '"') {
+		if (*e == '\\' && *(e + 1)) {
+			e += 2;
+			continue;
+		}
+		e++;
+	}
+	size_t len = e - p;
+	if (len >= sizeof(rsp_text)) len = sizeof(rsp_text) - 1;
+	memcpy(rsp_text, p, len);
+	rsp_text[len] = '\0';
+	rsp_text_len = len;  /* cumulative: reset, do not append */
+}
+
 static void sse_feed(const char *data, size_t len)
 {
 	for (size_t i = 0; i < len; i++) {
@@ -701,8 +1012,25 @@ static void sse_feed(const char *data, size_t len)
 		if (c == '\n') {
 			if (sse_line_len > 0) {
 				sse_line_buf[sse_line_len] = '\0';
-				if (strncmp(sse_line_buf, "data: ", 6) == 0) {
-					process_sse_event(sse_line_buf + 6);
+				/* Tolerate both "data: " (OpenAI) and
+				 * "data:" (DashScope native).
+				 */
+				char *payload = NULL;
+				if (strncmp(sse_line_buf, "data:", 5) == 0) {
+					payload = sse_line_buf + 5;
+					if (*payload == ' ') payload++;
+				}
+				if (payload) {
+					if (dbg_dump_sse) {
+						LOG_INF("SSE raw[%zu]: %.480s",
+							strlen(payload),
+							payload);
+					}
+					if (asr_mode) {
+						asr_extract_text(payload);
+					} else {
+						process_sse_event(payload);
+					}
 				}
 				sse_line_len = 0;
 			}
@@ -841,6 +1169,14 @@ static int receive_sse_stream(int sock)
 				if (sock_read_n(sock, http_recv_buf, to_read) < 0) {
 					sse_done = true;
 					break;
+				}
+				if (dbg_dump_sse) {
+					size_t dump = to_read < 480 ?
+						      to_read : 480;
+					http_recv_buf[dump] = '\0';
+					LOG_INF("CHUNK raw[%zu]: %s",
+						to_read,
+						(char *)http_recv_buf);
 				}
 				sse_feed((char *)http_recv_buf, to_read);
 
@@ -995,15 +1331,15 @@ static int ws_send_frame(int sock, uint8_t opcode,
 	if (ret) return ret;
 
 	/* Send masked payload in chunks */
-	uint8_t tmp[512];
 	size_t sent = 0;
 	while (sent < len) {
 		size_t chunk = len - sent;
-		if (chunk > sizeof(tmp)) chunk = sizeof(tmp);
+		if (chunk > sizeof(ws_tx_mask_buf))
+			chunk = sizeof(ws_tx_mask_buf);
 		for (size_t i = 0; i < chunk; i++) {
-			tmp[i] = data[sent + i] ^ mask[(sent + i) & 3];
+			ws_tx_mask_buf[i] = data[sent + i] ^ mask[(sent + i) & 3];
 		}
-		ret = sock_send_all(sock, (const char *)tmp, chunk);
+		ret = sock_send_all(sock, (const char *)ws_tx_mask_buf, chunk);
 		if (ret) return ret;
 		sent += chunk;
 	}
@@ -1047,6 +1383,48 @@ static int ws_skip_payload(int sock, size_t len)
 		len -= s;
 	}
 	return 0;
+}
+
+static void ws_log_close_frame(int sock, size_t payload_len,
+			      const char *context)
+{
+	uint8_t payload[126];
+	size_t rd = payload_len;
+
+	if (rd > sizeof(payload) - 1) {
+		rd = sizeof(payload) - 1;
+	}
+
+	if (rd > 0) {
+		if (sock_read_n(sock, payload, rd) < 0) {
+			LOG_WRN("%s: server closed connection (failed to read close payload)",
+				context);
+			return;
+		}
+	}
+
+	if (payload_len > rd) {
+		if (ws_skip_payload(sock, payload_len - rd) < 0) {
+			LOG_WRN("%s: server closed connection (failed to skip close payload)",
+				context);
+			return;
+		}
+	}
+
+	payload[rd] = '\0';
+
+	if (rd >= 2) {
+		uint16_t code = ((uint16_t)payload[0] << 8) | payload[1];
+		const char *reason = (rd > 2) ? (const char *)(payload + 2) : "";
+
+		LOG_WRN("%s: server closed connection (code=%u reason=%s)",
+			context, code, reason[0] ? reason : "<empty>");
+	} else if (rd > 0) {
+		LOG_WRN("%s: server closed connection (%u payload bytes)",
+			context, (unsigned int)payload_len);
+	} else {
+		LOG_WRN("%s: server closed connection", context);
+	}
 }
 
 static int ws_upgrade(int sock)
@@ -1367,11 +1745,16 @@ static int rt_send_session_update(int sock)
 		"\"modalities\":[\"text\",\"audio\"],"
 		"\"voice\":\"" RT_VOICE "\","
 		"\"instructions\":\"You are a helpful voice assistant. "
-		"Reply concisely in Chinese. "
-		"Keep answers under 3 sentences.\","
-		"\"input_audio_format\":\"pcm16\","
-		"\"output_audio_format\":\"pcm16\","
-		"\"turn_detection\":null}}");
+		"Reply in concise spoken Chinese. "
+		"Prefer one short sentence.\","
+		"\"input_audio_format\":\"pcm\","
+		"\"output_audio_format\":\"pcm\","
+		"\"temperature\":" RT_TEMPERATURE_JSON ","
+		"\"max_tokens\":%d,"
+		"\"turn_detection\":null}}",
+		RT_MAX_TOKENS);
+
+	LOG_INF("Realtime: session.update payload=%s", sse_line_buf);
 
 	return ws_send_frame(sock, WS_OP_TEXT,
 			     (const uint8_t *)sse_line_buf, len);
@@ -1380,35 +1763,48 @@ static int rt_send_session_update(int sock)
 static int rt_send_audio_chunks(int sock, const int16_t *pcm,
 				int num_samples)
 {
-	/* Send audio in 500ms chunks (8000 samples at 16kHz) */
-	const int CHUNK_SAMPLES = 8000;
+	/* Send audio in 1s chunks to reduce WebSocket/TLS framing overhead. */
+	const int CHUNK_SAMPLES = 16000;
 	int offset = 0;
 	int ret;
+	int64_t send_start_ms = k_uptime_get();
+	int total_chunks = (num_samples + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES;
+	int chunk_index = 0;
 
 	while (offset < num_samples) {
 		int chunk = num_samples - offset;
 		if (chunk > CHUNK_SAMPLES) chunk = CHUNK_SAMPLES;
+		int64_t chunk_start_ms = k_uptime_get();
 
 		int pcm_bytes = chunk * sizeof(int16_t);
 		size_t b64_len = base64_encode(
 			(const uint8_t *)(pcm + offset), pcm_bytes,
 			b64_wav_buf, MAX_B64_WAV_SIZE);
+		int64_t b64_done_ms = k_uptime_get();
 
 		int jlen = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
 			"{\"type\":\"input_audio_buffer.append\","
 			"\"audio\":\"%.*s\"}",
 			(int)b64_len, b64_wav_buf);
+		int64_t json_done_ms = k_uptime_get();
 
 		ret = ws_send_frame(sock, WS_OP_TEXT,
 				    (const uint8_t *)sse_line_buf, jlen);
 		if (ret) return ret;
+		chunk_index++;
+		LOG_INF("Realtime: chunk %d/%d sent (%d samples, b64=%u, encode=%lld ms, json=%lld ms, send=%lld ms)",
+			chunk_index, total_chunks, chunk, (unsigned int)b64_len,
+			(long long)(b64_done_ms - chunk_start_ms),
+			(long long)(json_done_ms - b64_done_ms),
+			(long long)(k_uptime_get() - json_done_ms));
 
 		offset += chunk;
 	}
 
-	LOG_INF("Realtime: sent %d audio chunks (%d samples)",
+	LOG_INF("Realtime: sent %d audio chunks (%d samples) in %lld ms",
 		(num_samples + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES,
-		num_samples);
+		num_samples,
+		(long long)(k_uptime_get() - send_start_ms));
 
 	/* Send commit to trigger server processing */
 	static const char commit_json[] =
@@ -1430,12 +1826,15 @@ static int rt_receive_response(int sock)
 {
 	struct ws_frame frame;
 	bool done = false;
+	bool audio_truncated = false;
+	bool stream_failed = false;
 	int audio_chunks = 0;
-	int accum_samples = 0;  /* accumulated 16kHz samples in record_pcm */
+	int accum_samples = 0;
 
 	rsp_text_len = 0;
 	rsp_text[0] = '\0';
-	current_state = AI_STATE_STREAMING;
+	current_state = AI_STATE_PROCESSING;
+	rt_playback_begin();
 
 	while (!done) {
 		if (ws_recv_frame_header(sock, &frame) < 0) break;
@@ -1460,6 +1859,7 @@ static int rt_receive_response(int sock)
 
 			if (strcmp(event_type,
 				   "response.audio.delta") == 0) {
+				int64_t now_ms = k_uptime_get();
 				/* Extract base64 audio from "delta" */
 				const char *dp = strstr(sse_line_buf,
 							"\"delta\":\"");
@@ -1475,8 +1875,10 @@ static int rt_receive_response(int sock)
 				if (!end) continue;
 				size_t b64_len = end - dp;
 
-				if (audio_chunks == 0)
+				if (audio_chunks == 0) {
+					rt_playback_note_first_delta();
 					LOG_INF("Realtime: first audio delta");
+				}
 
 				int decoded = base64_decode(
 					dp, b64_len,
@@ -1496,32 +1898,33 @@ static int rt_receive_response(int sock)
 						rsp_pcm_24k, samples_24k,
 						temp_16k, max_16k);
 
-				/* Accumulate into record_pcm (reused) */
-				int space = MAX_RECORD_SAMPLES -
-					    accum_samples;
-				int copy = samples_16k < space
-					   ? samples_16k : space;
-				if (copy > 0) {
-					memcpy(record_pcm + accum_samples,
-					       temp_16k,
-					       copy * sizeof(int16_t));
-					accum_samples += copy;
-				}
+				int copy = rt_playback_append(temp_16k,
+							 samples_16k);
+				accum_samples += copy;
+				if (copy < samples_16k)
+					audio_truncated = true;
 				audio_chunks++;
+				LOG_INF("Realtime: audio delta %d (%d samples = %.2fs, total=%d samples, t=+%lld ms)",
+					audio_chunks,
+					copy,
+					(float)copy / PLAYBACK_SAMPLE_RATE,
+					accum_samples,
+					(long long)(now_ms -
+						(rt_playback.first_delta_ms > 0
+						 ? rt_playback.first_delta_ms
+						 : now_ms)));
 
 			} else if (strcmp(event_type,
 				"response.audio_transcript.delta") == 0) {
-				char text_chunk[256];
-				int tlen = json_extract_string(
-					sse_line_buf, "delta",
-					text_chunk, sizeof(text_chunk));
-				if (tlen > 0 && rsp_text_len + tlen <
-				    sizeof(rsp_text) - 1) {
-					memcpy(rsp_text + rsp_text_len,
-					       text_chunk, tlen);
-					rsp_text_len += tlen;
-					rsp_text[rsp_text_len] = '\0';
-				}
+				/* Audio-only mode: ignore transcript text. */
+
+			} else if (strcmp(event_type,
+				  "response.created") == 0) {
+				LOG_INF("Realtime: response.created");
+
+			} else if (strcmp(event_type,
+				  "response.audio.done") == 0) {
+				LOG_INF("Realtime: response.audio.done");
 
 			} else if (strcmp(event_type,
 					  "response.done") == 0) {
@@ -1558,28 +1961,19 @@ static int rt_receive_response(int sock)
 		}
 	}
 
-	/* Play accumulated audio in one shot */
-	if (accum_samples > 0) {
-		current_state = AI_STATE_PLAYING;
-		LOG_INF("Realtime: playing %d samples (%.1fs)",
-			accum_samples,
-			(float)accum_samples / PLAYBACK_SAMPLE_RATE);
-		audio_play(record_pcm, accum_samplespcode == WS_OP_CLOSE) {
-			LOG_WRN("Realtime: server closed connection");
-			done = true;
+	rt_playback_finish(&stream_failed);
 
-		} else {
-			ws_skip_payload(sock, frame.payload_len);
-		}
+	if (audio_truncated) {
+		LOG_WRN("Realtime: reply audio truncated at %.1fs",
+			(float)accum_samples / PLAYBACK_SAMPLE_RATE);
 	}
 
-	/* Play accumulated audio in one shot */
-	if (accum_samples > 0) {
+	if (stream_failed && accum_samples > 0) {
 		current_state = AI_STATE_PLAYING;
-		LOG_INF("Realtime: playing %d samples (%.1fs)",
+		LOG_WRN("Realtime: falling back to one-shot playback (%d samples = %.1fs)",
 			accum_samples,
 			(float)accum_samples / PLAYBACK_SAMPLE_RATE);
-		audio_play(record_pcm, accum_samples);
+		audio_play(response_pcm, accum_samples);
 	}
 
 	return 0;
@@ -1592,6 +1986,8 @@ static int realtime_voice_session(int sock, const int16_t *pcm,
 
 	LOG_INF("Realtime: starting session (%d samples, %.1fs)",
 		num_samples, (float)num_samples / RECORD_SAMPLE_RATE);
+	LOG_INF("Realtime: model=%s voice=%s max_tokens=%d",
+		RT_MODEL, RT_VOICE, RT_MAX_TOKENS);
 
 	/* 1. WebSocket upgrade */
 	ret = rt_ws_upgrade(sock);
@@ -1606,8 +2002,9 @@ static int realtime_voice_session(int sock, const int16_t *pcm,
 		struct ws_frame frame;
 		bool got_updated = false;
 		int wait_events = 0;
+		int64_t wait_deadline_ms = k_uptime_get() + 15000;
 
-		while (!got_updated && wait_events < 10) {
+		while (!got_updated && k_uptime_get() < wait_deadline_ms) {
 			if (ws_recv_frame_header(sock, &frame) < 0) {
 				LOG_ERR("Realtime: lost connection waiting for session");
 				return -EIO;
@@ -1637,15 +2034,25 @@ static int realtime_voice_session(int sock, const int16_t *pcm,
 							sse_line_buf);
 						return -EIO;
 					}
+				} else {
+					LOG_WRN("Realtime: session wait raw payload: %s",
+						sse_line_buf);
 				}
 				wait_events++;
+			} else if (frame.opcode == WS_OP_PING) {
+				ws_skip_payload(sock, frame.payload_len);
+				ws_send_frame(sock, WS_OP_PONG, NULL, 0);
+			} else if (frame.opcode == WS_OP_CLOSE) {
+				ws_log_close_frame(sock, frame.payload_len,
+						   "Realtime session init");
+				return -EIO;
 			} else {
 				ws_skip_payload(sock, frame.payload_len);
 			}
 		}
 
 		if (!got_updated) {
-			LOG_ERR("Realtime: no session.updated after %d events",
+			LOG_ERR("Realtime: no session.updated within timeout (%d events)",
 				wait_events);
 			return -EIO;
 		}
@@ -1663,6 +2070,114 @@ static int realtime_voice_session(int sock, const int16_t *pcm,
 	/* 6. Send close frame */
 	ws_send_frame(sock, WS_OP_CLOSE, NULL, 0);
 
+	return ret;
+}
+
+/* ================================================================
+ *  Plan-A pipeline step 1: qwen3-asr-flash one-shot recognition
+ * ================================================================ */
+
+static int qwen_asr_recognize(int sock, const int16_t *pcm, int num_samples,
+			      char *text_out, size_t text_max)
+{
+	const int pcm_bytes = num_samples * (int)sizeof(int16_t);
+	const int wav_total = WAV_HEADER_SIZE + pcm_bytes;
+
+	/* Reuse rsp_pcm_24k as scratch for raw WAV bytes (it is unused until
+	 * the subsequent Realtime playback path runs).
+	 */
+	uint8_t *wav_buf = (uint8_t *)rsp_pcm_24k;
+	const int wav_scratch_max = MAX_RSP_PCM_24K * (int)sizeof(int16_t);
+
+	if (wav_total > wav_scratch_max) {
+		LOG_ERR("ASR: WAV too large (%d > %d)", wav_total,
+			wav_scratch_max);
+		return -ENOMEM;
+	}
+
+	build_wav_header(wav_buf, RECORD_SAMPLE_RATE, 16, 1, pcm_bytes);
+	memcpy(wav_buf + WAV_HEADER_SIZE, pcm, pcm_bytes);
+
+	size_t b64_len = base64_encode(wav_buf, wav_total,
+				       b64_wav_buf, MAX_B64_WAV_SIZE);
+	if (b64_len == 0) {
+		LOG_ERR("ASR: base64 encode failed (wav=%d)", wav_total);
+		return -ENOMEM;
+	}
+
+	static const char json_prefix[] =
+		"{\"model\":\"" ASR_MODEL "\","
+		"\"input\":{\"messages\":["
+		"{\"role\":\"system\",\"content\":[{\"text\":\"\"}]},"
+		"{\"role\":\"user\",\"content\":["
+		"{\"audio\":\"data:audio/wav;base64,";
+
+	static const char json_suffix[] =
+		"\"}"
+		"]}"
+		"]},"
+		"\"parameters\":{\"asr_options\":{\"language\":\"zh\","
+		"\"enable_lid\":false,\"enable_itn\":false}}}";
+
+	size_t body_len = strlen(json_prefix) + b64_len + strlen(json_suffix);
+
+	char http_header[512];
+	int hlen = snprintk(http_header, sizeof(http_header),
+		"POST %s HTTP/1.1\r\n"
+		"Host: %s\r\n"
+		"Content-Type: application/json\r\n"
+		"Authorization: Bearer %s\r\n"
+		"X-DashScope-SSE: enable\r\n"
+		"Content-Length: %zu\r\n"
+		"\r\n",
+		ASR_URL, AI_HOST, AI_API_KEY, body_len);
+	if (hlen <= 0) return -ENOMEM;
+
+	LOG_INF("ASR request: model=%s body=%zu (b64=%zu)",
+		ASR_MODEL, body_len, b64_len);
+
+	bool saved_stream_mode = stream_mode;
+	stream_mode = false;
+	audio_chunk_count = 0;
+	dbg_dump_sse = true;
+	asr_mode = true;
+
+	int64_t t0 = k_uptime_get();
+
+	int ret = sock_send_all(sock, http_header, hlen);
+	if (ret) goto out;
+
+	ret = sock_send_all(sock, json_prefix, strlen(json_prefix));
+	if (ret) goto out;
+
+	size_t sent = 0;
+	while (sent < b64_len) {
+		size_t chunk = b64_len - sent;
+		if (chunk > 4096) chunk = 4096;
+		ret = sock_send_all(sock, b64_wav_buf + sent, chunk);
+		if (ret) goto out;
+		sent += chunk;
+	}
+
+	ret = sock_send_all(sock, json_suffix, strlen(json_suffix));
+	if (ret) goto out;
+
+	ret = receive_sse_stream(sock);
+	if (ret == 0) {
+		size_t copy = rsp_text_len;
+		if (copy >= text_max) copy = text_max - 1;
+		memcpy(text_out, rsp_text, copy);
+		text_out[copy] = '\0';
+		LOG_INF("ASR result (%lld ms, %zu bytes): %s",
+			k_uptime_get() - t0, copy, text_out);
+	} else {
+		LOG_ERR("ASR: receive_sse_stream failed: %d", ret);
+	}
+
+out:
+	stream_mode = saved_stream_mode;
+	dbg_dump_sse = false;
+	asr_mode = false;
 	return ret;
 }
 
@@ -1818,32 +2333,44 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		LOG_INF("Recorded %d samples (%.1fs)",
 			num_samples, (float)num_samples / RECORD_SAMPLE_RATE);
 
-		/* Add user message */
-		add_msg(true, "Voice message");
+		num_samples = trim_recorded_pcm(record_pcm, num_samples);
 
 		/* ── TLS connect + Realtime WebSocket session ── */
 		current_state = AI_STATE_PROCESSING;
+
+#if AI_DEBUG_PIPELINE_ASR
+		/* Plan-A step 1: probe qwen3-asr-flash on a separate TLS
+		 * socket. Result is logged only; main flow is unchanged.
+		 */
+		{
+			int asr_sock = -1;
+			char asr_text[256];
+			int64_t asr_t0 = k_uptime_get();
+			int ar = tls_connect(&asr_sock);
+			if (ar == 0) {
+				qwen_asr_recognize(asr_sock, record_pcm,
+						   num_samples,
+						   asr_text,
+						   sizeof(asr_text));
+				zsock_close(asr_sock);
+				LOG_INF("ASR probe total %lld ms",
+					k_uptime_get() - asr_t0);
+			} else {
+				LOG_WRN("ASR probe: tls_connect failed: %d",
+					ar);
+			}
+		}
+#endif
 
 		int sock = -1;
 		ret = tls_connect(&sock);
 		if (ret) {
 			LOG_ERR("TLS connect failed: %d", ret);
-			add_msg(false, "[Connection error]");
 			current_state = AI_STATE_READY;
 			continue;
 		}
 
 		ret = realtime_voice_session(sock, record_pcm, num_samples);
-
-		/* Add AI response to history */
-		if (rsp_text_len > 0) {
-			add_msg(false, rsp_text);
-			printk("\n=== AI: %s ===\n", rsp_text);
-		} else if (ret) {
-			add_msg(false, "[Connection error]");
-		} else {
-			add_msg(false, "[No response]");
-		}
 
 		zsock_close(sock);
 
@@ -1862,6 +2389,13 @@ int ai_service_init(void)
 {
 	if (inited) return 0;
 	inited = true;
+
+	k_thread_create(&rt_playback_thread_data,
+			rt_playback_thread_stack,
+			RT_PLAYBACK_THREAD_STACK_SIZE,
+			rt_playback_thread, NULL, NULL, NULL,
+			6, 0, K_NO_WAIT);
+	k_thread_name_set(&rt_playback_thread_data, "ai_rt_playback");
 
 	k_thread_create(&ai_thread_data, ai_thread_stack,
 			AI_THREAD_STACK_SIZE,

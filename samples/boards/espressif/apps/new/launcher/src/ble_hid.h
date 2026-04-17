@@ -38,5 +38,7 @@ extern struct k_msgq kb_events;
 extern volatile bool g_kb_connected;
 
 int ble_hid_init(void);
+void ble_hid_pause(void);
+void ble_hid_resume(void);
 
 #endif

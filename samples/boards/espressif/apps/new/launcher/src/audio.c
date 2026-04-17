@@ -381,6 +381,9 @@ int audio_record(int16_t *pcm_buf, int max_samples, volatile bool *stop_flag)
 {
 	int ret;
 	int mono_idx = 0;
+	bool tx_keepalive_ok = true;
+	const int tx_prefill_blocks = MIN(4, BLOCK_COUNT - 1);
+	int tx_prefilled = 0;
 
 	/* Force I2S to NOT_READY state regardless of current state.
 	 * DROP is valid from RUNNING, STOPPING, READY, ERROR — only
@@ -430,20 +433,29 @@ int audio_record(int16_t *pcm_buf, int max_samples, volatile bool *stop_flag)
 	/* Additional settle time for DMA hardware */
 	k_msleep(50);
 
-	/* Pre-fill TX with silence for clock generation */
-	for (int i = 0; i < 2; i++) {
+	/* Pre-fill more TX silence so RX has stable clocks before the loop starts. */
+	for (int i = 0; i < tx_prefill_blocks; i++) {
 		void *blk;
 		ret = k_mem_slab_alloc(&tx_mem_slab, &blk, K_NO_WAIT);
 		if (ret) {
-			LOG_ERR("TX block alloc failed");
-			return ret;
+			break;
 		}
 		memset(blk, 0, BLOCK_SIZE);
 		ret = i2s_write(i2s_dev, blk, BLOCK_SIZE);
 		if (ret) {
+			k_mem_slab_free(&tx_mem_slab, blk);
+			if (ret == -EAGAIN || ret == -ENOMEM) {
+				break;
+			}
 			LOG_ERR("I2S TX write failed: %d", ret);
 			return ret;
 		}
+		tx_prefilled++;
+	}
+
+	if (tx_prefilled < 2) {
+		LOG_ERR("I2S TX prefill too small: %d", tx_prefilled);
+		return -EIO;
 	}
 
 	/* Start TX then RX */
@@ -467,10 +479,14 @@ int audio_record(int16_t *pcm_buf, int max_samples, volatile bool *stop_flag)
 		void *tx_blk;
 
 		/* Feed TX with silence to keep clocks running */
-		if (k_mem_slab_alloc(&tx_mem_slab, &tx_blk, K_NO_WAIT) == 0) {
+		if (tx_keepalive_ok &&
+		    k_mem_slab_alloc(&tx_mem_slab, &tx_blk, K_MSEC(20)) == 0) {
 			memset(tx_blk, 0, BLOCK_SIZE);
-			if (i2s_write(i2s_dev, tx_blk, BLOCK_SIZE) < 0) {
+			ret = i2s_write(i2s_dev, tx_blk, BLOCK_SIZE);
+			if (ret < 0) {
 				k_mem_slab_free(&tx_mem_slab, tx_blk);
+				tx_keepalive_ok = false;
+				LOG_WRN("Recording TX keepalive disabled: %d", ret);
 			}
 		}
 
@@ -689,6 +705,8 @@ int audio_stream_feed(const int16_t *samples, int count)
 	int blocks_written = 0;
 
 	while (pcm_idx < count) {
+		int block_start_idx = pcm_idx;
+		int next_pcm_idx = pcm_idx;
 		void *blk;
 		ret = k_mem_slab_alloc(&tx_mem_slab, &blk,
 				       stream_i2s_started ? K_MSEC(500)
@@ -699,10 +717,10 @@ int audio_stream_feed(const int16_t *samples, int count)
 		}
 		int16_t *out = (int16_t *)blk;
 		int n = 0;
-		while (n < mono_per_block && pcm_idx < count) {
-			out[n * 2] = samples[pcm_idx];
-			out[n * 2 + 1] = samples[pcm_idx];
-			pcm_idx++;
+		while (n < mono_per_block && next_pcm_idx < count) {
+			out[n * 2] = samples[next_pcm_idx];
+			out[n * 2 + 1] = samples[next_pcm_idx];
+			next_pcm_idx++;
 			n++;
 		}
 		while (n < mono_per_block) {
@@ -713,8 +731,27 @@ int audio_stream_feed(const int16_t *samples, int count)
 		ret = i2s_write(i2s_dev, blk, BLOCK_SIZE);
 		if (ret) {
 			k_mem_slab_free(&tx_mem_slab, blk);
-			break;
+
+			if (ret == -EIO && stream_i2s_started) {
+				int prep_ret = i2s_trigger(i2s_dev, I2S_DIR_TX,
+							   I2S_TRIGGER_PREPARE);
+
+				if (prep_ret) {
+					LOG_ERR("I2S TX prepare failed: %d", prep_ret);
+					return pcm_idx > 0 ? pcm_idx : prep_ret;
+				}
+
+				stream_i2s_started = false;
+				blocks_written = 0;
+				pcm_idx = block_start_idx;
+				LOG_WRN("I2S TX underrun recovered; rebuffering stream");
+				continue;
+			}
+
+			return pcm_idx > 0 ? pcm_idx : ret;
 		}
+
+		pcm_idx = next_pcm_idx;
 		blocks_written++;
 
 		/* Start I2S after pre-filling 2 blocks */
@@ -732,10 +769,14 @@ int audio_stream_feed(const int16_t *samples, int count)
 	/* If I2S not started yet and we have blocks, start now */
 	if (!stream_i2s_started && blocks_written > 0) {
 		ret = i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
-		if (!ret) stream_i2s_started = true;
+		if (ret) {
+			LOG_ERR("I2S TX late start failed: %d", ret);
+			return pcm_idx > 0 ? pcm_idx : ret;
+		}
+		stream_i2s_started = true;
 	}
 
-	return count;
+	return pcm_idx;
 }
 
 int audio_stream_stop(void)

@@ -126,6 +126,7 @@ struct hid_device {
 static struct hid_device hid_devices[MAX_HID_DEVICES];
 static int connect_retry_count;
 #define MAX_CONNECT_RETRIES 3
+static bool ble_hid_paused;
 
 /* ── Helpers ───────────────────────────────────────── */
 
@@ -741,6 +742,9 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi,
 
 static void start_scan(void)
 {
+	if (ble_hid_paused) {
+		return;
+	}
 	if (active_count() >= MAX_HID_DEVICES) {
 		return;
 	}
@@ -780,6 +784,10 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 		return;
 	}
 	if (!dev) {
+		bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+		return;
+	}
+	if (ble_hid_paused) {
 		bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 		return;
 	}
@@ -896,4 +904,23 @@ int ble_hid_init(void)
 
 	start_scan();
 	return 0;
+}
+
+void ble_hid_pause(void)
+{
+	ble_hid_paused = true;
+	bt_le_scan_stop();
+
+	for (int i = 0; i < MAX_HID_DEVICES; i++) {
+		if (hid_devices[i].conn) {
+			bt_conn_disconnect(hid_devices[i].conn,
+				BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+		}
+	}
+}
+
+void ble_hid_resume(void)
+{
+	ble_hid_paused = false;
+	start_scan();
 }
