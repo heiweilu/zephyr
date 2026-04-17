@@ -15,13 +15,13 @@ static void on_create(lv_obj_t *screen)
 	lv_obj_t *title = lv_label_create(screen);
 	lv_label_set_text(title, "Music");
 	lv_obj_set_style_text_color(title, lv_color_white(), 0);
-	lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+	lv_obj_set_style_text_font(title, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
 	lv_obj_t *desc = lv_label_create(screen);
 	lv_label_set_text(desc, "ES8311 Audio Player\n(Phase 5)");
 	lv_obj_set_style_text_color(desc, lv_color_hex(0x888888), 0);
-	lv_obj_set_style_text_font(desc, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(desc, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(desc, LV_ALIGN_CENTER, 0, -10);
 
 	lv_obj_t *btn = lv_button_create(screen);

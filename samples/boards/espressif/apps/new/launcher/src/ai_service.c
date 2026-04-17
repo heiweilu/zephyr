@@ -44,6 +44,11 @@ LOG_MODULE_REGISTER(ai_service, LOG_LEVEL_INF);
 #define AI_URL    "/compatible-mode/v1/chat/completions"
 #define AI_MODEL  "qwen3.5-omni-flash"
 
+/* Qwen-Omni Realtime WebSocket API */
+#define RT_MODEL  "qwen-omni-turbo-realtime"
+#define RT_WS_PATH "/api-ws/v1/realtime?model=" RT_MODEL
+#define RT_VOICE  "Cherry"
+
 /* Match the known-good OpenSSL probe as closely as the socket API allows. */
 #define AI_TLS_CIPHERSUITE_ECDHE_RSA_AES128_GCM_SHA256 0xC02F
 
@@ -77,9 +82,6 @@ static char rsp_audio_b64[MAX_RSP_AUDIO_B64]
 		__attribute__((section(".ext_ram.bss")));
 
 static int16_t rsp_pcm_24k[MAX_RSP_PCM_24K]
-		__attribute__((section(".ext_ram.bss")));
-
-int16_t playback_pcm[MAX_PLAYBACK_SAMPLES]
 		__attribute__((section(".ext_ram.bss")));
 
 static char sse_line_buf[SSE_LINE_BUF_SIZE]
@@ -616,11 +618,14 @@ static int json_extract_string(const char *json, const char *key,
 
 static bool stream_mode;
 static bool stream_started;
+static bool sse_done;
+static int audio_chunk_count;
 
 static void process_sse_event(const char *json_str)
 {
 	if (strncmp(json_str, "[DONE]", 6) == 0) {
 		LOG_INF("SSE stream complete");
+		sse_done = true;
 		return;
 	}
 
@@ -663,6 +668,7 @@ static void process_sse_event(const char *json_str)
 		if (!stream_started) {
 			audio_stream_start();
 			stream_started = true;
+			audio_chunk_count = 0;
 			LOG_INF("Streaming playback initiated");
 		}
 
@@ -670,6 +676,8 @@ static void process_sse_event(const char *json_str)
 					    (uint8_t *)rsp_pcm_24k,
 					    MAX_RSP_PCM_24K * sizeof(int16_t));
 		if (decoded <= 0) return;
+
+		audio_chunk_count++;
 
 		int samples_24k = decoded / sizeof(int16_t);
 		int16_t *temp_16k = (int16_t *)rsp_audio_b64;
@@ -714,7 +722,6 @@ static uint8_t  sock_buf[4096]
 		__attribute__((section(".ext_ram.bss")));
 static size_t   sock_buf_len;
 static size_t   sock_buf_pos;
-static bool     sse_done;
 
 static int sock_read_byte(int sock)
 {
@@ -857,8 +864,21 @@ static int receive_sse_stream(int sock)
 	}
 
 done:
-	LOG_INF("SSE complete: text=%zu bytes, audio_b64=%zu bytes",
-		rsp_text_len, rsp_audio_b64_len);
+	/* Drain any remaining HTTP chunked data so socket is clean for reuse */
+	if (is_chunked) {
+		char drain[64];
+		struct zsock_pollfd pfd = { .fd = sock, .events = ZSOCK_POLLIN };
+		while (zsock_poll(&pfd, 1, 200) > 0) {
+			int r = zsock_recv(sock, drain, sizeof(drain), 0);
+			if (r <= 0) break;
+		}
+	}
+	/* Reset buffered reader state */
+	sock_buf_len = 0;
+	sock_buf_pos = 0;
+
+	LOG_INF("SSE complete: text=%zu bytes, audio_b64=%zu bytes, chunks=%d",
+		rsp_text_len, rsp_audio_b64_len, audio_chunk_count);
 	return 0;
 }
 
@@ -872,8 +892,6 @@ static int send_voice_request(int sock, const char *b64_audio, size_t b64_len)
 		"{\"model\":\"" AI_MODEL "\","
 		"\"stream\":true,"
 		"\"enable_thinking\":false,"
-		"\"modalities\":[\"text\",\"audio\"],"
-		"\"audio\":{\"voice\":\"Tina\",\"format\":\"wav\"},"
 		"\"messages\":["
 		"{\"role\":\"system\",\"content\":\"You are a helpful voice assistant. "
 		"Reply concisely in Chinese. Keep answers under 3 sentences.\"},"
@@ -923,6 +941,729 @@ static int send_voice_request(int sock, const char *b64_audio, size_t b64_len)
 
 	LOG_INF("Request sent, waiting for SSE response...");
 	return receive_sse_stream(sock);
+}
+
+/* ================================================================
+ *  WebSocket minimal client (for CosyVoice TTS)
+ * ================================================================ */
+
+#define WS_OP_TEXT   0x1
+#define WS_OP_BINARY 0x2
+#define WS_OP_CLOSE  0x8
+#define WS_OP_PING   0x9
+#define WS_OP_PONG   0xA
+
+#define WS_URL   "/api-ws/v1/inference"
+
+struct ws_frame {
+	uint8_t opcode;
+	size_t  payload_len;
+};
+
+static int ws_send_frame(int sock, uint8_t opcode,
+			 const uint8_t *data, size_t len)
+{
+	uint8_t header[14];
+	int hlen = 0;
+	uint32_t mask_val = k_cycle_get_32();
+	uint8_t mask[4];
+
+	memcpy(mask, &mask_val, 4);
+
+	header[0] = 0x80 | opcode;  /* FIN + opcode */
+	if (len < 126) {
+		header[1] = 0x80 | (uint8_t)len;
+		hlen = 2;
+	} else if (len < 65536) {
+		header[1] = 0x80 | 126;
+		header[2] = (len >> 8) & 0xFF;
+		header[3] = len & 0xFF;
+		hlen = 4;
+	} else {
+		header[1] = 0x80 | 127;
+		memset(header + 2, 0, 4);
+		header[6] = (len >> 24) & 0xFF;
+		header[7] = (len >> 16) & 0xFF;
+		header[8] = (len >> 8) & 0xFF;
+		header[9] = len & 0xFF;
+		hlen = 10;
+	}
+	memcpy(header + hlen, mask, 4);
+	hlen += 4;
+
+	int ret = sock_send_all(sock, (const char *)header, hlen);
+	if (ret) return ret;
+
+	/* Send masked payload in chunks */
+	uint8_t tmp[512];
+	size_t sent = 0;
+	while (sent < len) {
+		size_t chunk = len - sent;
+		if (chunk > sizeof(tmp)) chunk = sizeof(tmp);
+		for (size_t i = 0; i < chunk; i++) {
+			tmp[i] = data[sent + i] ^ mask[(sent + i) & 3];
+		}
+		ret = sock_send_all(sock, (const char *)tmp, chunk);
+		if (ret) return ret;
+		sent += chunk;
+	}
+	return 0;
+}
+
+static int ws_recv_frame_header(int sock, struct ws_frame *frame)
+{
+	uint8_t hdr[2];
+	if (sock_read_n(sock, hdr, 2) < 0) return -1;
+
+	frame->opcode = hdr[0] & 0x0F;
+	bool has_mask = (hdr[1] & 0x80) != 0;
+	size_t len = hdr[1] & 0x7F;
+
+	if (len == 126) {
+		uint8_t ext[2];
+		if (sock_read_n(sock, ext, 2) < 0) return -1;
+		len = ((size_t)ext[0] << 8) | ext[1];
+	} else if (len == 127) {
+		uint8_t ext[8];
+		if (sock_read_n(sock, ext, 8) < 0) return -1;
+		len = ((size_t)ext[4] << 24) | ((size_t)ext[5] << 16) |
+		      ((size_t)ext[6] << 8) | ext[7];
+	}
+
+	if (has_mask) {
+		uint8_t mask_key[4];
+		if (sock_read_n(sock, mask_key, 4) < 0) return -1;
+	}
+
+	frame->payload_len = len;
+	return 0;
+}
+
+static int ws_skip_payload(int sock, size_t len)
+{
+	while (len > 0) {
+		size_t s = len > sizeof(http_recv_buf) ? sizeof(http_recv_buf) : len;
+		if (sock_read_n(sock, http_recv_buf, s) < 0) return -1;
+		len -= s;
+	}
+	return 0;
+}
+
+static int ws_upgrade(int sock)
+{
+	char req[512];
+	int rlen = snprintk(req, sizeof(req),
+		"GET %s HTTP/1.1\r\n"
+		"Host: %s\r\n"
+		"Upgrade: websocket\r\n"
+		"Connection: Upgrade\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"Sec-WebSocket-Version: 13\r\n"
+		"Authorization: bearer %s\r\n"
+		"\r\n",
+		WS_URL, AI_HOST, AI_API_KEY);
+
+	sock_buf_len = 0;
+	sock_buf_pos = 0;
+
+	int ret = sock_send_all(sock, req, rlen);
+	if (ret) return ret;
+
+	char line[256];
+	if (sock_read_line(sock, line, sizeof(line)) < 0) return -EIO;
+
+	if (strncmp(line, "HTTP/1.1 101", 12) != 0) {
+		LOG_ERR("WebSocket upgrade failed: %s", line);
+		return -EIO;
+	}
+
+	/* Skip remaining response headers */
+	while (1) {
+		int len = sock_read_line(sock, line, sizeof(line));
+		if (len < 0) return -EIO;
+		if (len == 0) break;
+	}
+
+	LOG_INF("WebSocket upgraded");
+	return 0;
+}
+
+/* ================================================================
+ *  CosyVoice TTS
+ * ================================================================ */
+
+#define TTS_MODEL   "cosyvoice-v3-flash"
+#define TTS_VOICE   "longanyang"
+
+static size_t json_escape_str(const char *src, char *dst, size_t dst_max)
+{
+	size_t si = 0, di = 0;
+	while (src[si] && di < dst_max - 2) {
+		char c = src[si];
+		if (c == '"' || c == '\\') {
+			if (di + 2 > dst_max - 1) break;
+			dst[di++] = '\\';
+			dst[di++] = c;
+		} else if (c == '\n') {
+			if (di + 2 > dst_max - 1) break;
+			dst[di++] = '\\';
+			dst[di++] = 'n';
+		} else if (c == '\r') {
+			/* skip CR */
+		} else if (c == '\t') {
+			if (di + 2 > dst_max - 1) break;
+			dst[di++] = '\\';
+			dst[di++] = 't';
+		} else {
+			dst[di++] = c;
+		}
+		si++;
+	}
+	dst[di] = '\0';
+	return di;
+}
+
+static int cosyvoice_tts(int sock, const char *text)
+{
+	int ret;
+
+	LOG_INF("TTS: starting CosyVoice for %zu bytes of text", strlen(text));
+
+	/* 1. WebSocket upgrade on existing TLS socket */
+	ret = ws_upgrade(sock);
+	if (ret) {
+		return ret;
+	}
+
+	/* 3. Generate task_id */
+	uint32_t t1 = k_cycle_get_32();
+	uint32_t t2 = t1 ^ 0xDEADBEEF;
+	char task_id[40];
+	snprintk(task_id, sizeof(task_id), "%08x-0000-4000-8000-%08x%04x",
+		 t1, t2, (t1 >> 16) & 0xFFFF);
+
+	/* 4. Send run-task (use sse_line_buf as temp) */
+	int clen = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+		"{\"header\":{\"action\":\"run-task\","
+		"\"task_id\":\"%s\","
+		"\"streaming\":\"duplex\"},"
+		"\"payload\":{"
+		"\"task_group\":\"audio\","
+		"\"task\":\"tts\","
+		"\"function\":\"SpeechSynthesizer\","
+		"\"model\":\"" TTS_MODEL "\","
+		"\"parameters\":{"
+		"\"text_type\":\"PlainText\","
+		"\"voice\":\"" TTS_VOICE "\","
+		"\"format\":\"pcm\","
+		"\"sample_rate\":16000,"
+		"\"volume\":50,"
+		"\"rate\":1.0,"
+		"\"pitch\":1.0},"
+		"\"input\":{}}}", task_id);
+
+	ret = ws_send_frame(sock, WS_OP_TEXT,
+			    (const uint8_t *)sse_line_buf, clen);
+	if (ret) goto cleanup;
+	LOG_INF("TTS: run-task sent");
+
+	/* 5. Wait for task-started */
+	{
+		struct ws_frame frame;
+		char json_buf[1024];
+		bool started = false;
+
+		while (!started) {
+			if (ws_recv_frame_header(sock, &frame) < 0) {
+				ret = -EIO;
+				goto cleanup;
+			}
+			if (frame.opcode == WS_OP_TEXT) {
+				size_t rd = frame.payload_len;
+				if (rd >= sizeof(json_buf)) rd = sizeof(json_buf) - 1;
+				if (sock_read_n(sock, (uint8_t *)json_buf, rd) < 0) {
+					ret = -EIO;
+					goto cleanup;
+				}
+				json_buf[rd] = '\0';
+				if (frame.payload_len > rd)
+					ws_skip_payload(sock, frame.payload_len - rd);
+
+				if (strstr(json_buf, "task-started")) {
+					started = true;
+					LOG_INF("TTS: task started");
+				} else if (strstr(json_buf, "task-failed")) {
+					LOG_ERR("TTS: task failed: %s", json_buf);
+					ret = -EIO;
+					goto cleanup;
+				}
+			} else {
+				ws_skip_payload(sock, frame.payload_len);
+			}
+		}
+	}
+
+	/* 6. Send continue-task with text */
+	{
+		/* Escape text for JSON */
+		char *escaped = (char *)rsp_audio_b64;  /* reuse 512KB buffer */
+		json_escape_str(text, escaped, MAX_RSP_AUDIO_B64 / 2);
+
+		clen = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+			"{\"header\":{\"action\":\"continue-task\","
+			"\"task_id\":\"%s\","
+			"\"streaming\":\"duplex\"},"
+			"\"payload\":{\"input\":{\"text\":\"%s\"}}}",
+			task_id, escaped);
+
+		ret = ws_send_frame(sock, WS_OP_TEXT,
+				    (const uint8_t *)sse_line_buf, clen);
+		if (ret) goto cleanup;
+		LOG_INF("TTS: continue-task sent (%d bytes)", clen);
+	}
+
+	/* 7. Send finish-task */
+	clen = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+		"{\"header\":{\"action\":\"finish-task\","
+		"\"task_id\":\"%s\","
+		"\"streaming\":\"duplex\"},"
+		"\"payload\":{\"input\":{}}}", task_id);
+
+	ret = ws_send_frame(sock, WS_OP_TEXT,
+			    (const uint8_t *)sse_line_buf, clen);
+	if (ret) goto cleanup;
+	LOG_INF("TTS: finish-task sent");
+
+	/* 8. Receive binary PCM frames until task-finished */
+	{
+		struct ws_frame frame;
+		char json_buf[1024];
+		int16_t *pcm_out = rsp_pcm_24k;  /* reuse as PCM collect buffer */
+		int total_samples = 0;
+		int max_samples = MAX_RSP_PCM_24K;
+		int pcm_chunks = 0;
+		bool finished = false;
+
+		while (!finished) {
+			if (ws_recv_frame_header(sock, &frame) < 0) break;
+
+			if (frame.opcode == WS_OP_BINARY) {
+				/* PCM audio data */
+				size_t remaining = frame.payload_len;
+				while (remaining > 0) {
+					size_t avail = (max_samples - total_samples)
+						       * sizeof(int16_t);
+					size_t to_read = remaining;
+					if (to_read > avail) to_read = avail;
+					if (to_read == 0) {
+						ws_skip_payload(sock, remaining);
+						break;
+					}
+					if (sock_read_n(sock,
+							(uint8_t *)&pcm_out[total_samples],
+							to_read) < 0) {
+						finished = true;
+						break;
+					}
+					total_samples += to_read / sizeof(int16_t);
+					remaining -= to_read;
+				}
+				pcm_chunks++;
+			} else if (frame.opcode == WS_OP_TEXT) {
+				size_t rd = frame.payload_len;
+				if (rd >= sizeof(json_buf))
+					rd = sizeof(json_buf) - 1;
+				if (sock_read_n(sock, (uint8_t *)json_buf,
+						rd) < 0)
+					break;
+				json_buf[rd] = '\0';
+				if (frame.payload_len > rd)
+					ws_skip_payload(sock,
+							frame.payload_len - rd);
+
+				if (strstr(json_buf, "task-finished")) {
+					finished = true;
+					LOG_INF("TTS: task finished, %d chunks, "
+						"%d samples (%.1fs)",
+						pcm_chunks, total_samples,
+						(float)total_samples / 16000.0f);
+				} else if (strstr(json_buf, "task-failed")) {
+					LOG_ERR("TTS: task failed: %s",
+						json_buf);
+					finished = true;
+				}
+			} else if (frame.opcode == WS_OP_PING) {
+				/* Reply with pong */
+				ws_skip_payload(sock, frame.payload_len);
+				ws_send_frame(sock, WS_OP_PONG, NULL, 0);
+			} else if (frame.opcode == WS_OP_CLOSE) {
+				LOG_WRN("TTS: server closed");
+				finished = true;
+			} else {
+				ws_skip_payload(sock, frame.payload_len);
+			}
+		}
+
+		/* 9. Play collected PCM */
+		if (total_samples > 0) {
+			LOG_INF("TTS: playing %d samples (%.1fs)",
+				total_samples,
+				(float)total_samples / 16000.0f);
+			audio_play(pcm_out, total_samples);
+		}
+	}
+
+cleanup:
+	return ret;
+}
+
+/* ================================================================
+ *  Qwen-Omni Realtime WebSocket session
+ * ================================================================ */
+
+static int rt_ws_upgrade(int sock)
+{
+	char req[512];
+	int rlen = snprintk(req, sizeof(req),
+		"GET %s HTTP/1.1\r\n"
+		"Host: %s\r\n"
+		"Upgrade: websocket\r\n"
+		"Connection: Upgrade\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"Sec-WebSocket-Version: 13\r\n"
+		"Authorization: bearer %s\r\n"
+		"\r\n",
+		RT_WS_PATH, AI_HOST, AI_API_KEY);
+
+	sock_buf_len = 0;
+	sock_buf_pos = 0;
+
+	int ret = sock_send_all(sock, req, rlen);
+	if (ret) return ret;
+
+	char line[256];
+	if (sock_read_line(sock, line, sizeof(line)) < 0) return -EIO;
+
+	if (strncmp(line, "HTTP/1.1 101", 12) != 0) {
+		LOG_ERR("Realtime WS upgrade failed: %s", line);
+		return -EIO;
+	}
+
+	while (1) {
+		int len = sock_read_line(sock, line, sizeof(line));
+		if (len < 0) return -EIO;
+		if (len == 0) break;
+	}
+
+	LOG_INF("Realtime WebSocket upgraded");
+	return 0;
+}
+
+static int rt_send_session_update(int sock)
+{
+	int len = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+		"{\"type\":\"session.update\","
+		"\"session\":{"
+		"\"modalities\":[\"text\",\"audio\"],"
+		"\"voice\":\"" RT_VOICE "\","
+		"\"instructions\":\"You are a helpful voice assistant. "
+		"Reply concisely in Chinese. "
+		"Keep answers under 3 sentences.\","
+		"\"input_audio_format\":\"pcm16\","
+		"\"output_audio_format\":\"pcm16\","
+		"\"turn_detection\":null}}");
+
+	return ws_send_frame(sock, WS_OP_TEXT,
+			     (const uint8_t *)sse_line_buf, len);
+}
+
+static int rt_send_audio_chunks(int sock, const int16_t *pcm,
+				int num_samples)
+{
+	/* Send audio in 500ms chunks (8000 samples at 16kHz) */
+	const int CHUNK_SAMPLES = 8000;
+	int offset = 0;
+	int ret;
+
+	while (offset < num_samples) {
+		int chunk = num_samples - offset;
+		if (chunk > CHUNK_SAMPLES) chunk = CHUNK_SAMPLES;
+
+		int pcm_bytes = chunk * sizeof(int16_t);
+		size_t b64_len = base64_encode(
+			(const uint8_t *)(pcm + offset), pcm_bytes,
+			b64_wav_buf, MAX_B64_WAV_SIZE);
+
+		int jlen = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+			"{\"type\":\"input_audio_buffer.append\","
+			"\"audio\":\"%.*s\"}",
+			(int)b64_len, b64_wav_buf);
+
+		ret = ws_send_frame(sock, WS_OP_TEXT,
+				    (const uint8_t *)sse_line_buf, jlen);
+		if (ret) return ret;
+
+		offset += chunk;
+	}
+
+	LOG_INF("Realtime: sent %d audio chunks (%d samples)",
+		(num_samples + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES,
+		num_samples);
+
+	/* Send commit to trigger server processing */
+	static const char commit_json[] =
+		"{\"type\":\"input_audio_buffer.commit\"}";
+	ret = ws_send_frame(sock, WS_OP_TEXT,
+			    (const uint8_t *)commit_json,
+			    strlen(commit_json));
+	if (ret) return ret;
+
+	/* Manual mode: explicitly request response after commit */
+	static const char create_json[] =
+		"{\"type\":\"response.create\"}";
+	return ws_send_frame(sock, WS_OP_TEXT,
+			     (const uint8_t *)create_json,
+			     strlen(create_json));
+}
+
+static int rt_receive_response(int sock)
+{
+	struct ws_frame frame;
+	bool done = false;
+	int audio_chunks = 0;
+	int accum_samples = 0;  /* accumulated 16kHz samples in record_pcm */
+
+	rsp_text_len = 0;
+	rsp_text[0] = '\0';
+	current_state = AI_STATE_STREAMING;
+
+	while (!done) {
+		if (ws_recv_frame_header(sock, &frame) < 0) break;
+
+		if (frame.opcode == WS_OP_TEXT) {
+			size_t rd = frame.payload_len;
+			if (rd >= SSE_LINE_BUF_SIZE)
+				rd = SSE_LINE_BUF_SIZE - 1;
+			if (sock_read_n(sock, (uint8_t *)sse_line_buf,
+					rd) < 0)
+				break;
+			sse_line_buf[rd] = '\0';
+			if (frame.payload_len > rd)
+				ws_skip_payload(sock,
+						frame.payload_len - rd);
+
+			char event_type[64];
+			if (json_extract_string(sse_line_buf, "type",
+						event_type,
+						sizeof(event_type)) <= 0)
+				continue;
+
+			if (strcmp(event_type,
+				   "response.audio.delta") == 0) {
+				/* Extract base64 audio from "delta" */
+				const char *dp = strstr(sse_line_buf,
+							"\"delta\":\"");
+				if (!dp) {
+					dp = strstr(sse_line_buf,
+						    "\"delta\": \"");
+					if (!dp) continue;
+					dp += 10;
+				} else {
+					dp += 9;
+				}
+				const char *end = strchr(dp, '"');
+				if (!end) continue;
+				size_t b64_len = end - dp;
+
+				if (audio_chunks == 0)
+					LOG_INF("Realtime: first audio delta");
+
+				int decoded = base64_decode(
+					dp, b64_len,
+					(uint8_t *)rsp_pcm_24k,
+					MAX_RSP_PCM_24K *
+					sizeof(int16_t));
+				if (decoded <= 0) continue;
+
+				int samples_24k =
+					decoded / sizeof(int16_t);
+				int16_t *temp_16k =
+					(int16_t *)rsp_audio_b64;
+				int max_16k = MAX_RSP_AUDIO_B64 /
+					sizeof(int16_t);
+				int samples_16k =
+					audio_resample_24k_to_16k(
+						rsp_pcm_24k, samples_24k,
+						temp_16k, max_16k);
+
+				/* Accumulate into record_pcm (reused) */
+				int space = MAX_RECORD_SAMPLES -
+					    accum_samples;
+				int copy = samples_16k < space
+					   ? samples_16k : space;
+				if (copy > 0) {
+					memcpy(record_pcm + accum_samples,
+					       temp_16k,
+					       copy * sizeof(int16_t));
+					accum_samples += copy;
+				}
+				audio_chunks++;
+
+			} else if (strcmp(event_type,
+				"response.audio_transcript.delta") == 0) {
+				char text_chunk[256];
+				int tlen = json_extract_string(
+					sse_line_buf, "delta",
+					text_chunk, sizeof(text_chunk));
+				if (tlen > 0 && rsp_text_len + tlen <
+				    sizeof(rsp_text) - 1) {
+					memcpy(rsp_text + rsp_text_len,
+					       text_chunk, tlen);
+					rsp_text_len += tlen;
+					rsp_text[rsp_text_len] = '\0';
+				}
+
+			} else if (strcmp(event_type,
+					  "response.done") == 0) {
+				LOG_INF("Realtime: response done "
+					"(audio=%d chunks, %d samples "
+					"= %.1fs, text=%zu bytes)",
+					audio_chunks, accum_samples,
+					(float)accum_samples /
+					PLAYBACK_SAMPLE_RATE,
+					rsp_text_len);
+				done = true;
+
+			} else if (strcmp(event_type, "error") == 0) {
+				LOG_ERR("Realtime error: %s", sse_line_buf);
+				done = true;
+
+			} else if (strcmp(event_type,
+					  "session.created") == 0 ||
+				   strcmp(event_type,
+					  "session.updated") == 0) {
+				LOG_INF("Realtime: %s", event_type);
+			}
+
+		} else if (frame.opcode == WS_OP_PING) {
+			ws_skip_payload(sock, frame.payload_len);
+			ws_send_frame(sock, WS_OP_PONG, NULL, 0);
+
+		} else if (frame.opcode == WS_OP_CLOSE) {
+			LOG_WRN("Realtime: server closed connection");
+			done = true;
+
+		} else {
+			ws_skip_payload(sock, frame.payload_len);
+		}
+	}
+
+	/* Play accumulated audio in one shot */
+	if (accum_samples > 0) {
+		current_state = AI_STATE_PLAYING;
+		LOG_INF("Realtime: playing %d samples (%.1fs)",
+			accum_samples,
+			(float)accum_samples / PLAYBACK_SAMPLE_RATE);
+		audio_play(record_pcm, accum_samplespcode == WS_OP_CLOSE) {
+			LOG_WRN("Realtime: server closed connection");
+			done = true;
+
+		} else {
+			ws_skip_payload(sock, frame.payload_len);
+		}
+	}
+
+	/* Play accumulated audio in one shot */
+	if (accum_samples > 0) {
+		current_state = AI_STATE_PLAYING;
+		LOG_INF("Realtime: playing %d samples (%.1fs)",
+			accum_samples,
+			(float)accum_samples / PLAYBACK_SAMPLE_RATE);
+		audio_play(record_pcm, accum_samples);
+	}
+
+	return 0;
+}
+
+static int realtime_voice_session(int sock, const int16_t *pcm,
+				  int num_samples)
+{
+	int ret;
+
+	LOG_INF("Realtime: starting session (%d samples, %.1fs)",
+		num_samples, (float)num_samples / RECORD_SAMPLE_RATE);
+
+	/* 1. WebSocket upgrade */
+	ret = rt_ws_upgrade(sock);
+	if (ret) return ret;
+
+	/* 2. Send session configuration */
+	ret = rt_send_session_update(sock);
+	if (ret) return ret;
+
+	/* 3. Wait for session.created + session.updated before sending audio */
+	{
+		struct ws_frame frame;
+		bool got_updated = false;
+		int wait_events = 0;
+
+		while (!got_updated && wait_events < 10) {
+			if (ws_recv_frame_header(sock, &frame) < 0) {
+				LOG_ERR("Realtime: lost connection waiting for session");
+				return -EIO;
+			}
+			if (frame.opcode == WS_OP_TEXT) {
+				size_t rd = frame.payload_len;
+				if (rd >= SSE_LINE_BUF_SIZE)
+					rd = SSE_LINE_BUF_SIZE - 1;
+				if (sock_read_n(sock, (uint8_t *)sse_line_buf,
+						rd) < 0)
+					return -EIO;
+				sse_line_buf[rd] = '\0';
+				if (frame.payload_len > rd)
+					ws_skip_payload(sock,
+							frame.payload_len - rd);
+
+				char etype[64];
+				if (json_extract_string(sse_line_buf, "type",
+							etype,
+							sizeof(etype)) > 0) {
+					LOG_INF("Realtime: %s", etype);
+					if (strcmp(etype,
+						   "session.updated") == 0)
+						got_updated = true;
+					else if (strcmp(etype, "error") == 0) {
+						LOG_ERR("Realtime session error: %s",
+							sse_line_buf);
+						return -EIO;
+					}
+				}
+				wait_events++;
+			} else {
+				ws_skip_payload(sock, frame.payload_len);
+			}
+		}
+
+		if (!got_updated) {
+			LOG_ERR("Realtime: no session.updated after %d events",
+				wait_events);
+			return -EIO;
+		}
+	}
+
+	/* 4. Send recorded audio as base64 PCM chunks */
+	ret = rt_send_audio_chunks(sock, pcm, num_samples);
+	if (ret) return ret;
+
+	LOG_INF("Realtime: audio sent, receiving response...");
+
+	/* 5. Receive and stream-play response */
+	ret = rt_receive_response(sock);
+
+	/* 6. Send close frame */
+	ws_send_frame(sock, WS_OP_CLOSE, NULL, 0);
+
+	return ret;
 }
 
 /* ================================================================
@@ -1080,28 +1821,9 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		/* Add user message */
 		add_msg(true, "Voice message");
 
-		/* ── Encode ── */
+		/* ── TLS connect + Realtime WebSocket session ── */
 		current_state = AI_STATE_PROCESSING;
 
-		int pcm_bytes = num_samples * sizeof(int16_t);
-		uint8_t wav_header[WAV_HEADER_SIZE];
-		build_wav_header(wav_header, RECORD_SAMPLE_RATE, 16, 1, pcm_bytes);
-
-		uint8_t *wav_tmp = (uint8_t *)rsp_pcm_24k;
-		int wav_total = WAV_HEADER_SIZE + pcm_bytes;
-		memcpy(wav_tmp, wav_header, WAV_HEADER_SIZE);
-		memcpy(wav_tmp + WAV_HEADER_SIZE, record_pcm, pcm_bytes);
-
-		size_t b64_len = base64_encode(wav_tmp, wav_total,
-					       b64_wav_buf, MAX_B64_WAV_SIZE);
-		if (b64_len == 0) {
-			LOG_ERR("Base64 encode failed");
-			current_state = AI_STATE_READY;
-			continue;
-		}
-		LOG_INF("WAV encoded: %d → %zu b64", wav_total, b64_len);
-
-		/* ── TLS connect + send + SSE receive ── */
 		int sock = -1;
 		ret = tls_connect(&sock);
 		if (ret) {
@@ -1111,26 +1833,19 @@ static void ai_worker(void *p1, void *p2, void *p3)
 			continue;
 		}
 
-		stream_mode = true;
-		stream_started = false;
-
-		ret = send_voice_request(sock, b64_wav_buf, b64_len);
-		zsock_close(sock);
-
-		/* ── Playback ── */
-		if (stream_started) {
-			current_state = AI_STATE_PLAYING;
-			audio_stream_stop();
-		}
-		stream_mode = false;
+		ret = realtime_voice_session(sock, record_pcm, num_samples);
 
 		/* Add AI response to history */
 		if (rsp_text_len > 0) {
 			add_msg(false, rsp_text);
 			printk("\n=== AI: %s ===\n", rsp_text);
+		} else if (ret) {
+			add_msg(false, "[Connection error]");
 		} else {
 			add_msg(false, "[No response]");
 		}
+
+		zsock_close(sock);
 
 		current_state = AI_STATE_READY;
 		LOG_INF("Ready for next question");

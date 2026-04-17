@@ -87,7 +87,7 @@ static lv_obj_t *create_bubble(lv_obj_t *parent, bool is_user,
 	lv_obj_t *lbl = lv_label_create(bubble);
 	lv_label_set_text(lbl, text);
 	lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-	lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(lbl, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(lbl, LV_SIZE_CONTENT);
 	lv_obj_set_style_max_width(lbl, 196, 0);  /* 210 - 2*6 pad - 2 margin */
@@ -160,6 +160,17 @@ static void poll_cb(lv_timer_t *timer)
 		const struct ai_chat_msg *msg =
 			ai_service_get_msg(rendered_msg_count);
 		if (msg && chat_area) {
+			/* If an AI msg arrives while live bubble exists,
+			 * remove the live bubble first to avoid duplicate. */
+			if (!msg->is_user && live_bubble_label) {
+				lv_obj_t *row = lv_obj_get_parent(
+					lv_obj_get_parent(live_bubble_label));
+				if (row) {
+					lv_obj_delete(row);
+				}
+				live_bubble_label = NULL;
+				rendered_live_len = 0;
+			}
 			create_bubble(chat_area, msg->is_user, msg->text);
 			lv_obj_scroll_to_y(chat_area, LV_COORD_MAX, LV_ANIM_ON);
 		}
@@ -182,9 +193,17 @@ static void poll_cb(lv_timer_t *timer)
 		}
 	}
 
-	/* ── When streaming ends, clear live bubble tracking ── */
+	/* ── When streaming ends, remove live bubble (history msg replaces it) ── */
 	if ((prev_state == AI_STATE_STREAMING || prev_state == AI_STATE_PLAYING)
 	    && state == AI_STATE_READY) {
+		if (live_bubble_label) {
+			/* label → bubble → row: delete the row container */
+			lv_obj_t *row = lv_obj_get_parent(
+					lv_obj_get_parent(live_bubble_label));
+			if (row) {
+				lv_obj_delete(row);
+			}
+		}
 		live_bubble_label = NULL;
 		rendered_live_len = 0;
 	}
@@ -219,7 +238,7 @@ static void on_create(lv_obj_t *screen)
 	status_label = lv_label_create(title_bar);
 	lv_label_set_text(status_label, "Init...");
 	lv_obj_set_style_text_color(status_label, lv_color_hex(0x888888), 0);
-	lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(status_label, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(status_label, LV_ALIGN_RIGHT_MID, -6, 0);
 
 	/* ── Chat area (scrollable message list) ── */
@@ -264,7 +283,7 @@ static void on_create(lv_obj_t *screen)
 	action_text = lv_label_create(bar);
 	lv_label_set_text(action_text, "Init...");
 	lv_obj_set_style_text_color(action_text, lv_color_hex(0xaaaaaa), 0);
-	lv_obj_set_style_text_font(action_text, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(action_text, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(action_text, LV_ALIGN_LEFT_MID, 72, 0);
 
 	/* Add MIC to keyboard group for keyboard navigation */

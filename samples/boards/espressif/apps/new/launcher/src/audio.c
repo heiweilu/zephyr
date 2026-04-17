@@ -83,11 +83,13 @@ LOG_MODULE_REGISTER(audio, LOG_LEVEL_INF);
 
 /* I2S DMA slab buffers in PSRAM — prevents DMA race conditions from
  * corrupting DRAM structures (free list, LVGL pool, etc).
- * Slabs are re-initialized before each recording/playback session. */
-__attribute__((section(".ext_ram.bss"), aligned(4)))
-static uint8_t tx_slab_buf[BLOCK_SIZE * BLOCK_COUNT];
-__attribute__((section(".ext_ram.bss"), aligned(4)))
-static uint8_t rx_slab_buf[BLOCK_SIZE * BLOCK_COUNT];
+ * Slabs are re-initialized before each recording/playback session.
+ * TX slab MUST be in internal SRAM — GDMA reads bypass the SPI cache so
+ * data written by the CPU through cache is invisible to DMA when the
+ * buffer sits in PSRAM.  RX slab also in SRAM for same cache coherence
+ * reason (DMA writes may not be visible to CPU through cached PSRAM). */
+static uint8_t tx_slab_buf[BLOCK_SIZE * BLOCK_COUNT] __attribute__((aligned(4)));
+static uint8_t rx_slab_buf[BLOCK_SIZE * BLOCK_COUNT] __attribute__((aligned(4)));
 
 static struct k_mem_slab tx_mem_slab;
 static struct k_mem_slab rx_mem_slab;
@@ -630,18 +632,15 @@ int audio_play(const int16_t *pcm_buf, int num_samples)
 }
 
 /* ================================================================
- *  Streaming accumulate-then-play
+ *  Streaming chunk-by-chunk playback
  *
- *  SSE chunks are decoded and resampled in real-time as they arrive
- *  (saving decode time), but playback only starts after all data is
- *  received.  This avoids I2S underrun caused by network delivery
- *  being slower than real-time playback rate.
+ *  I2S TX is started once in audio_stream_start() and kept running.
+ *  audio_stream_feed() just writes blocks into the running stream.
+ *  audio_stream_stop() drains and stops I2S.
  * ================================================================ */
 
-static volatile int stream_write_idx;   /* mono samples accumulated so far */
-static volatile bool stream_active;     /* accumulation in progress */
-static int16_t *stream_buf;            /* pointer to playback_pcm */
-static int stream_buf_max;              /* max samples in buffer */
+static volatile bool stream_active;
+static volatile bool stream_i2s_started;
 
 int audio_stream_start(void)
 {
@@ -650,26 +649,91 @@ int audio_stream_start(void)
 		return -EBUSY;
 	}
 
-	stream_write_idx = 0;
 	stream_active = true;
+	stream_i2s_started = false;
 
-	extern int16_t playback_pcm[];
-	stream_buf = playback_pcm;
-	stream_buf_max = MAX_PLAYBACK_SAMPLES;
+	/* Reset I2S TX and mem slab */
+	i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+	k_mem_slab_init(&tx_mem_slab, tx_slab_buf, BLOCK_SIZE, BLOCK_COUNT);
+
+	struct i2s_config tx_cfg = {
+		.word_size = SAMPLE_BITS,
+		.channels = NUM_CHANNELS,
+		.format = I2S_FMT_DATA_FORMAT_I2S,
+		.options = I2S_OPT_BIT_CLK_MASTER | I2S_OPT_FRAME_CLK_MASTER,
+		.frame_clk_freq = PLAYBACK_SAMPLE_RATE,
+		.mem_slab = &tx_mem_slab,
+		.block_size = BLOCK_SIZE,
+		.timeout = 1000,
+	};
+	int ret = i2s_configure(i2s_dev, I2S_DIR_TX, &tx_cfg);
+	if (ret) {
+		LOG_ERR("I2S TX config failed: %d", ret);
+		stream_active = false;
+		return ret;
+	}
+
+	/* Enable PA once — stays on for all chunks */
+	audio_pa_enable(1);
 
 	return 0;
 }
 
 int audio_stream_feed(const int16_t *samples, int count)
 {
-	if (!stream_active) return -EINVAL;
+	if (!stream_active || count <= 0) return 0;
 
-	int space = stream_buf_max - stream_write_idx;
-	if (count > space) count = space;
-	if (count <= 0) return 0;
+	int ret;
+	int mono_per_block = SAMPLES_PER_BLOCK / NUM_CHANNELS;
+	int pcm_idx = 0;
+	int blocks_written = 0;
 
-	memcpy(&stream_buf[stream_write_idx], samples, count * sizeof(int16_t));
-	stream_write_idx += count;
+	while (pcm_idx < count) {
+		void *blk;
+		ret = k_mem_slab_alloc(&tx_mem_slab, &blk,
+				       stream_i2s_started ? K_MSEC(500)
+							  : K_NO_WAIT);
+		if (ret) {
+			if (!stream_i2s_started) break;
+			continue;
+		}
+		int16_t *out = (int16_t *)blk;
+		int n = 0;
+		while (n < mono_per_block && pcm_idx < count) {
+			out[n * 2] = samples[pcm_idx];
+			out[n * 2 + 1] = samples[pcm_idx];
+			pcm_idx++;
+			n++;
+		}
+		while (n < mono_per_block) {
+			out[n * 2] = 0;
+			out[n * 2 + 1] = 0;
+			n++;
+		}
+		ret = i2s_write(i2s_dev, blk, BLOCK_SIZE);
+		if (ret) {
+			k_mem_slab_free(&tx_mem_slab, blk);
+			break;
+		}
+		blocks_written++;
+
+		/* Start I2S after pre-filling 2 blocks */
+		if (!stream_i2s_started && blocks_written >= 2) {
+			ret = i2s_trigger(i2s_dev, I2S_DIR_TX,
+					  I2S_TRIGGER_START);
+			if (ret) {
+				LOG_ERR("I2S TX start failed: %d", ret);
+				return ret;
+			}
+			stream_i2s_started = true;
+		}
+	}
+
+	/* If I2S not started yet and we have blocks, start now */
+	if (!stream_i2s_started && blocks_written > 0) {
+		ret = i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
+		if (!ret) stream_i2s_started = true;
+	}
 
 	return count;
 }
@@ -680,17 +744,18 @@ int audio_stream_stop(void)
 
 	stream_active = false;
 
-	/* Play all accumulated audio */
-	if (stream_write_idx > 0) {
-		LOG_INF("Playing %d accumulated samples (%.1fs)",
-			stream_write_idx,
-			(float)stream_write_idx / PLAYBACK_SAMPLE_RATE);
-		audio_play(stream_buf, stream_write_idx);
+	/* Let buffered blocks drain */
+	if (stream_i2s_started) {
+		k_msleep(200);
+		i2s_trigger(i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+		stream_i2s_started = false;
 	}
 
+	audio_pa_enable(0);
+
 	/* Reinitialize mem slabs for clean state before next recording */
-	k_mem_slab_init(&tx_mem_slab, tx_mem_slab.buffer, BLOCK_SIZE, BLOCK_COUNT);
-	k_mem_slab_init(&rx_mem_slab, rx_mem_slab.buffer, BLOCK_SIZE, BLOCK_COUNT);
+	k_mem_slab_init(&tx_mem_slab, tx_slab_buf, BLOCK_SIZE, BLOCK_COUNT);
+	k_mem_slab_init(&rx_mem_slab, rx_slab_buf, BLOCK_SIZE, BLOCK_COUNT);
 
 	return 0;
 }

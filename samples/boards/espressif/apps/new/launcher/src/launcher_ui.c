@@ -72,7 +72,7 @@ static lv_obj_t *create_icon(lv_obj_t *parent, int app_id,
 	lv_obj_t *lbl = lv_label_create(cont);
 	lv_label_set_text(lbl, app->name);
 	lv_obj_set_style_text_color(lbl, lv_color_hex(0xcccccc), 0);
-	lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(lbl, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
 
 	/* Add icon to keyboard group for focus navigation */
@@ -108,14 +108,14 @@ void launcher_ui_init(void)
 	status_label = lv_label_create(bar);
 	lv_label_set_text(status_label, "BLE: Scanning...");
 	lv_obj_set_style_text_color(status_label, lv_color_hex(0x00ff88), 0);
-	lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(status_label, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(status_label, LV_ALIGN_LEFT_MID, 8, 0);
 
 	/* Title on right side of status bar */
 	lv_obj_t *title = lv_label_create(bar);
 	lv_label_set_text(title, "CHD-BOX");
 	lv_obj_set_style_text_color(title, lv_color_hex(0x8888aa), 0);
-	lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+	lv_obj_set_style_text_font(title, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(title, LV_ALIGN_RIGHT_MID, -8, 0);
 
 	/* ── Icon Grid ── */

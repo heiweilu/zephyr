@@ -857,7 +857,11 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 {
-	printk("[BLE] Pairing failed, reason %d\n", reason);
+	char addr[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+	printk("[BLE] Pairing failed (%s), reason %d — removing bond\n",
+	       addr, reason);
+	bt_unpair(BT_ID_DEFAULT, bt_conn_get_dst(conn));
 	cleanup_stale_bonds();
 }
 
