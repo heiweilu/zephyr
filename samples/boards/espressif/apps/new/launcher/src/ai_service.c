@@ -60,6 +60,13 @@ LOG_MODULE_REGISTER(ai_service, LOG_LEVEL_INF);
 #define ASR_URL   "/api/v1/services/aigc/multimodal-generation/generation"
 #define AI_DEBUG_PIPELINE_ASR 1
 
+/* Plan-A pipeline step 2-A: qwen-turbo LLM probe over OpenAI compat SSE.
+ * When AI_DEBUG_PIPELINE_LLM is 1 and ASR returned non-empty text, post
+ * that text to chat/completions and log the streamed reply.
+ */
+#define LLM_MODEL "qwen-turbo"
+#define AI_DEBUG_PIPELINE_LLM 1
+
 /* Match the known-good OpenSSL probe as closely as the socket API allows. */
 #define AI_TLS_CIPHERSUITE_ECDHE_RSA_AES128_GCM_SHA256 0xC02F
 
@@ -2182,6 +2189,73 @@ out:
 }
 
 /* ================================================================
+ *  Plan-A pipeline step 2-A: qwen-turbo LLM probe (OpenAI compat SSE)
+ * ================================================================ */
+
+static int qwen_llm_chat(int sock, const char *user_text,
+			 char *reply_out, size_t reply_max)
+{
+	/* JSON-escape user_text (max ~256 bytes ASR text → escaped ≤ 512). */
+	char escaped[512];
+	json_escape_str(user_text, escaped, sizeof(escaped));
+
+	/* Build full JSON body in sse_line_buf (PSRAM, 64KB). */
+	int body_len = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+		"{\"model\":\"" LLM_MODEL "\","
+		"\"stream\":true,"
+		"\"enable_thinking\":false,"
+		"\"messages\":["
+		"{\"role\":\"system\",\"content\":\"You are a helpful voice "
+		"assistant. Reply concisely in Chinese, one short sentence.\"},"
+		"{\"role\":\"user\",\"content\":\"%s\"}"
+		"]}",
+		escaped);
+	if (body_len <= 0 || body_len >= SSE_LINE_BUF_SIZE) return -ENOMEM;
+
+	char http_header[512];
+	int hlen = snprintk(http_header, sizeof(http_header),
+		"POST %s HTTP/1.1\r\n"
+		"Host: %s\r\n"
+		"Content-Type: application/json\r\n"
+		"Authorization: Bearer %s\r\n"
+		"Content-Length: %d\r\n"
+		"\r\n",
+		AI_URL, AI_HOST, AI_API_KEY, body_len);
+	if (hlen <= 0) return -ENOMEM;
+
+	LOG_INF("LLM request: model=%s body=%d (input=%zu)",
+		LLM_MODEL, body_len, strlen(user_text));
+
+	bool saved_stream_mode = stream_mode;
+	stream_mode = false;  /* collect text only, no audio playback */
+	audio_chunk_count = 0;
+
+	int64_t t0 = k_uptime_get();
+
+	int ret = sock_send_all(sock, http_header, hlen);
+	if (ret) goto out;
+
+	ret = sock_send_all(sock, sse_line_buf, body_len);
+	if (ret) goto out;
+
+	ret = receive_sse_stream(sock);
+	if (ret == 0) {
+		size_t copy = rsp_text_len;
+		if (copy >= reply_max) copy = reply_max - 1;
+		memcpy(reply_out, rsp_text, copy);
+		reply_out[copy] = '\0';
+		LOG_INF("LLM reply (%lld ms, %zu bytes): %s",
+			k_uptime_get() - t0, copy, reply_out);
+	} else {
+		LOG_ERR("LLM: receive_sse_stream failed: %d", ret);
+	}
+
+out:
+	stream_mode = saved_stream_mode;
+	return ret;
+}
+
+/* ================================================================
  *  Chat history
  * ================================================================ */
 
@@ -2342,9 +2416,9 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		/* Plan-A step 1: probe qwen3-asr-flash on a separate TLS
 		 * socket. Result is logged only; main flow is unchanged.
 		 */
+		char asr_text[256] = {0};
 		{
 			int asr_sock = -1;
-			char asr_text[256];
 			int64_t asr_t0 = k_uptime_get();
 			int ar = tls_connect(&asr_sock);
 			if (ar == 0) {
@@ -2360,6 +2434,32 @@ static void ai_worker(void *p1, void *p2, void *p3)
 					ar);
 			}
 		}
+
+#if AI_DEBUG_PIPELINE_LLM
+		/* Plan-A step 2-A: if ASR returned non-empty text, probe
+		 * qwen-turbo LLM on a separate TLS socket. Reply is logged
+		 * only; Realtime flow below is still unchanged.
+		 */
+		if (asr_text[0] != '\0') {
+			int llm_sock = -1;
+			char llm_reply[512];
+			int64_t llm_t0 = k_uptime_get();
+			int lr = tls_connect(&llm_sock);
+			if (lr == 0) {
+				qwen_llm_chat(llm_sock, asr_text,
+					      llm_reply,
+					      sizeof(llm_reply));
+				zsock_close(llm_sock);
+				LOG_INF("LLM probe total %lld ms",
+					k_uptime_get() - llm_t0);
+			} else {
+				LOG_WRN("LLM probe: tls_connect failed: %d",
+					lr);
+			}
+		} else {
+			LOG_WRN("LLM probe skipped: ASR text empty");
+		}
+#endif
 #endif
 
 		int sock = -1;
