@@ -113,7 +113,7 @@ void launcher_ui_init(void)
 
 	/* Title on right side of status bar */
 	lv_obj_t *title = lv_label_create(bar);
-	lv_label_set_text(title, "CHD-BOX");
+	lv_label_set_text(title, "Zephyr-Card");
 	lv_obj_set_style_text_color(title, lv_color_hex(0x8888aa), 0);
 	lv_obj_set_style_text_font(title, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(title, LV_ALIGN_RIGHT_MID, -8, 0);

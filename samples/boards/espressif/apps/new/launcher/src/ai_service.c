@@ -2668,12 +2668,15 @@ static void ai_worker(void *p1, void *p2, void *p3)
 			}
 		}
 
-		/* ── Recording ── */
+		/* ── Recording / ASR ── */
 		current_state = AI_STATE_RECORDING;
 		recording_stop = false;
 
-		int num_samples = audio_record(record_pcm, MAX_RECORD_SAMPLES,
-					       &recording_stop);
+		int num_samples = 0;
+		char asr_text[256] = {0};
+
+		num_samples = audio_record(record_pcm, MAX_RECORD_SAMPLES,
+					   &recording_stop);
 		if (num_samples <= 0) {
 			LOG_ERR("Recording failed: %d", num_samples);
 			current_state = AI_STATE_READY;
@@ -2692,7 +2695,6 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		/* Plan-A step 1: probe qwen3-asr-flash on a separate TLS
 		 * socket. Result is logged only; main flow is unchanged.
 		 */
-		char asr_text[256] = {0};
 		{
 			int asr_sock = -1;
 			int64_t asr_t0 = k_uptime_get();
@@ -2710,6 +2712,7 @@ static void ai_worker(void *p1, void *p2, void *p3)
 					ar);
 			}
 		}
+#endif /* AI_DEBUG_PIPELINE_ASR */
 
 #if AI_DEBUG_PIPELINE_LLM
 		/* Plan-A step 2-A: if ASR returned non-empty text, probe
@@ -2761,9 +2764,8 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		} else {
 			LOG_WRN("TTS probe skipped: LLM reply empty");
 		}
-#endif
-#endif
-#endif
+#endif /* AI_DEBUG_PIPELINE_TTS */
+#endif /* AI_DEBUG_PIPELINE_LLM */
 
 #if AI_USE_REALTIME
 		int sock = -1;
