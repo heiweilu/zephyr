@@ -73,6 +73,25 @@ LOG_MODULE_REGISTER(ai_service, LOG_LEVEL_INF);
  */
 #define AI_DEBUG_PIPELINE_TTS 1
 
+/* Plan-A pipeline step 2-D: disable the legacy Qwen-Omni Realtime path.
+ * Keep the helper code compiled so we can re-enable for comparison by
+ * flipping this flag back to 1. The pipeline (ASR -> LLM -> TTS) alone
+ * fully answers the user's question now.
+ */
+#define AI_USE_REALTIME 0
+
+/* Plan-A pipeline step 2-G: qwen-tts-realtime as faster alternative to
+ * cosyvoice-v3-flash. Same WebSocket host, path /api-ws/v1/realtime with
+ * model query param (OpenAI-Realtime event style). Audio is base64 PCM
+ * 24kHz mono 16-bit -> resample to 16kHz -> audio_play. Set
+ * AI_USE_QWEN_TTS to 1 to route TTS probe through qwen_tts_realtime(),
+ * 0 falls back to cosyvoice_tts().
+ */
+#define QWEN_TTS_MODEL "qwen3-tts-flash-realtime"
+#define QWEN_TTS_VOICE "Cherry"
+#define QWEN_TTS_WS_PATH "/api-ws/v1/realtime?model=" QWEN_TTS_MODEL
+#define AI_USE_QWEN_TTS 1
+
 /* Match the known-good OpenSSL probe as closely as the socket API allows. */
 #define AI_TLS_CIPHERSUITE_ECDHE_RSA_AES128_GCM_SHA256 0xC02F
 
@@ -1514,6 +1533,228 @@ static size_t json_escape_str(const char *src, char *dst, size_t dst_max)
 	return di;
 }
 
+/* ================================================================
+ *  Qwen-TTS Realtime (qwen3-tts-flash-realtime)
+ *  WebSocket /api-ws/v1/realtime, OpenAI-Realtime event protocol.
+ *  server_commit mode: client sends text + session.finish, server
+ *  auto-segments and streams base64 PCM 24kHz mono 16-bit deltas.
+ * ================================================================ */
+static int rt_ws_upgrade_path(int sock, const char *path); /* fwd */
+static int qwen_tts_realtime(int sock, const char *text)
+{
+	int ret;
+	int64_t t0 = k_uptime_get();
+	int64_t first_delta_ms = 0;
+	int total_samples_24k = 0;
+	int audio_chunks = 0;
+	bool got_updated = false;
+	bool done = false;
+	struct ws_frame frame;
+
+	LOG_INF("Qwen-TTS: starting for %zu bytes, model=%s voice=%s",
+		strlen(text), QWEN_TTS_MODEL, QWEN_TTS_VOICE);
+
+	/* 1. WebSocket upgrade */
+	ret = rt_ws_upgrade_path(sock, QWEN_TTS_WS_PATH);
+	if (ret) return ret;
+
+	/* 2. Send session.update */
+	{
+		int len = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+			"{\"type\":\"session.update\","
+			"\"session\":{"
+			"\"voice\":\"" QWEN_TTS_VOICE "\","
+			"\"response_format\":\"pcm\","
+			"\"sample_rate\":24000,"
+			"\"mode\":\"server_commit\""
+			"}}");
+		ret = ws_send_frame(sock, WS_OP_TEXT,
+				    (const uint8_t *)sse_line_buf, len);
+		if (ret) return ret;
+	}
+
+	/* 3. Wait for session.updated */
+	{
+		int64_t deadline = k_uptime_get() + 10000;
+		while (!got_updated && k_uptime_get() < deadline) {
+			if (ws_recv_frame_header(sock, &frame) < 0) {
+				LOG_ERR("Qwen-TTS: lost connection during session init");
+				return -EIO;
+			}
+			if (frame.opcode == WS_OP_TEXT) {
+				size_t rd = frame.payload_len;
+				if (rd >= SSE_LINE_BUF_SIZE)
+					rd = SSE_LINE_BUF_SIZE - 1;
+				if (sock_read_n(sock, (uint8_t *)sse_line_buf, rd) < 0)
+					return -EIO;
+				sse_line_buf[rd] = '\0';
+				if (frame.payload_len > rd)
+					ws_skip_payload(sock, frame.payload_len - rd);
+				char etype[64];
+				if (json_extract_string(sse_line_buf, "type",
+							etype, sizeof(etype)) > 0) {
+					LOG_INF("Qwen-TTS: %s", etype);
+					if (strcmp(etype, "session.updated") == 0)
+						got_updated = true;
+					else if (strcmp(etype, "error") == 0) {
+						LOG_ERR("Qwen-TTS session error: %s",
+							sse_line_buf);
+						return -EIO;
+					}
+				}
+			} else if (frame.opcode == WS_OP_PING) {
+				ws_skip_payload(sock, frame.payload_len);
+				ws_send_frame(sock, WS_OP_PONG, NULL, 0);
+			} else if (frame.opcode == WS_OP_CLOSE) {
+				ws_log_close_frame(sock, frame.payload_len,
+						   "Qwen-TTS session init");
+				return -EIO;
+			} else {
+				ws_skip_payload(sock, frame.payload_len);
+			}
+		}
+		if (!got_updated) {
+			LOG_ERR("Qwen-TTS: no session.updated within timeout");
+			return -EIO;
+		}
+	}
+
+	/* 4. Send input_text_buffer.append + session.finish
+	 * (server_commit: server auto-commits when session.finish arrives)
+	 */
+	{
+		char *esc = (char *)rsp_audio_b64; /* reuse scratch */
+		size_t esc_len = json_escape_str(text, esc, MAX_RSP_AUDIO_B64);
+		int len = snprintk(sse_line_buf, SSE_LINE_BUF_SIZE,
+			"{\"type\":\"input_text_buffer.append\","
+			"\"text\":\"%.*s\"}",
+			(int)esc_len, esc);
+		ret = ws_send_frame(sock, WS_OP_TEXT,
+				    (const uint8_t *)sse_line_buf, len);
+		if (ret) return ret;
+
+		static const char finish_json[] =
+			"{\"type\":\"session.finish\"}";
+		ret = ws_send_frame(sock, WS_OP_TEXT,
+				    (const uint8_t *)finish_json,
+				    sizeof(finish_json) - 1);
+		if (ret) return ret;
+		LOG_INF("Qwen-TTS: text submitted, waiting for audio deltas");
+	}
+
+	/* 5. Receive audio deltas. Accumulate all resampled 16k PCM into
+	 *    response_pcm, then play once at the end via audio_play().
+	 *
+	 *    NOTE: Streaming playback (audio_stream_feed while chunks arrive)
+	 *    was tried but on this device TLS/TCP throughput is only ~0.3x
+	 *    realtime, so I2S consistently underruns. Wait-all-then-play
+	 *    delivers glitch-free audio at the cost of ~server-response-time
+	 *    silence before the first sound.
+	 */
+	int total_samples_16k = 0;
+	while (!done) {
+		if (ws_recv_frame_header(sock, &frame) < 0) {
+			LOG_WRN("Qwen-TTS: connection closed before session.finished");
+			break;
+		}
+
+		if (frame.opcode == WS_OP_CLOSE) {
+			ws_log_close_frame(sock, frame.payload_len, "Qwen-TTS");
+			break;
+		}
+		if (frame.opcode == WS_OP_PING) {
+			ws_skip_payload(sock, frame.payload_len);
+			ws_send_frame(sock, WS_OP_PONG, NULL, 0);
+			continue;
+		}
+		if (frame.opcode != WS_OP_TEXT) {
+			ws_skip_payload(sock, frame.payload_len);
+			continue;
+		}
+
+		size_t rd = frame.payload_len;
+		if (rd >= SSE_LINE_BUF_SIZE)
+			rd = SSE_LINE_BUF_SIZE - 1;
+		if (sock_read_n(sock, (uint8_t *)sse_line_buf, rd) < 0)
+			break;
+		sse_line_buf[rd] = '\0';
+		if (frame.payload_len > rd)
+			ws_skip_payload(sock, frame.payload_len - rd);
+
+		char etype[64];
+		if (json_extract_string(sse_line_buf, "type",
+					etype, sizeof(etype)) <= 0)
+			continue;
+
+		if (strcmp(etype, "response.audio.delta") == 0) {
+			const char *dp = strstr(sse_line_buf, "\"delta\":\"");
+			if (!dp) {
+				dp = strstr(sse_line_buf, "\"delta\": \"");
+				if (!dp) continue;
+				dp += 10;
+			} else {
+				dp += 9;
+			}
+			const char *end = strchr(dp, '"');
+			if (!end) continue;
+			size_t b64_len = end - dp;
+
+			int64_t now_ms = k_uptime_get();
+			if (first_delta_ms == 0) {
+				first_delta_ms = now_ms;
+				LOG_INF("Qwen-TTS: first audio delta @ T+%lld ms",
+					(long long)(first_delta_ms - t0));
+			}
+
+			/* Decode this chunk into head of rsp_pcm_24k (reused
+			 * as scratch each chunk; we don't need to keep the
+			 * full buffer anymore since we stream immediately).
+			 */
+			int decoded = base64_decode(
+				dp, b64_len,
+				(uint8_t *)rsp_pcm_24k,
+				MAX_RSP_PCM_24K * (int)sizeof(int16_t));
+			if (decoded <= 0) continue;
+
+			int samples_24k = decoded / (int)sizeof(int16_t);
+			total_samples_24k += samples_24k;
+			audio_chunks++;
+
+			int remain = MAX_PLAYBACK_SAMPLES - total_samples_16k;
+			if (remain <= 0) {
+				LOG_WRN("Qwen-TTS: response_pcm full, dropping tail");
+				continue;
+			}
+			int produced = audio_resample_24k_to_16k(
+				rsp_pcm_24k, samples_24k,
+				response_pcm + total_samples_16k, remain);
+			total_samples_16k += produced;
+		} else if (strcmp(etype, "response.done") == 0) {
+			LOG_INF("Qwen-TTS: response.done");
+		} else if (strcmp(etype, "session.finished") == 0) {
+			LOG_INF("Qwen-TTS: session.finished");
+			done = true;
+		} else if (strcmp(etype, "error") == 0) {
+			LOG_ERR("Qwen-TTS error: %s", sse_line_buf);
+			break;
+		}
+	}
+
+	/* 6. Play accumulated audio once (blocking). */
+	if (total_samples_16k > 0) {
+		audio_play(response_pcm, total_samples_16k);
+	} else if (total_samples_24k == 0) {
+		LOG_WRN("Qwen-TTS: no audio received");
+	}
+
+	LOG_INF("Qwen-TTS: total %lld ms, first-delta %lld ms, %d chunks, %d ms audio",
+		(long long)(k_uptime_get() - t0),
+		(long long)(first_delta_ms ? first_delta_ms - t0 : 0),
+		audio_chunks,
+		(total_samples_24k * 1000) / 24000);
+	return 0;
+}
+
 static int cosyvoice_tts(int sock, const char *text)
 {
 	int ret;
@@ -1736,7 +1977,7 @@ cleanup:
  *  Qwen-Omni Realtime WebSocket session
  * ================================================================ */
 
-static int rt_ws_upgrade(int sock)
+static int rt_ws_upgrade_path(int sock, const char *path)
 {
 	char req[512];
 	int rlen = snprintk(req, sizeof(req),
@@ -1748,7 +1989,7 @@ static int rt_ws_upgrade(int sock)
 		"Sec-WebSocket-Version: 13\r\n"
 		"Authorization: bearer %s\r\n"
 		"\r\n",
-		RT_WS_PATH, AI_HOST, AI_API_KEY);
+		path, AI_HOST, AI_API_KEY);
 
 	sock_buf_len = 0;
 	sock_buf_pos = 0;
@@ -1770,8 +2011,13 @@ static int rt_ws_upgrade(int sock)
 		if (len == 0) break;
 	}
 
-	LOG_INF("Realtime WebSocket upgraded");
+	LOG_INF("Realtime WebSocket upgraded (%s)", path);
 	return 0;
+}
+
+static int rt_ws_upgrade(int sock)
+{
+	return rt_ws_upgrade_path(sock, RT_WS_PATH);
 }
 
 static int rt_send_session_update(int sock)
@@ -2491,15 +2737,20 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		}
 
 #if AI_DEBUG_PIPELINE_TTS
-		/* Plan-A step 2-B: speak the LLM reply via existing
-		 * cosyvoice_tts (WebSocket, streamed PCM playback).
+		/* Plan-A step 2-B/2-G: speak the LLM reply.
+		 * AI_USE_QWEN_TTS=1 -> qwen3-tts-flash-realtime (new, low latency)
+		 * AI_USE_QWEN_TTS=0 -> cosyvoice-v3-flash (legacy baseline)
 		 */
 		if (llm_reply[0] != '\0') {
 			int tts_sock = -1;
 			int64_t tts_t0 = k_uptime_get();
 			int tr = tls_connect(&tts_sock);
 			if (tr == 0) {
+#if AI_USE_QWEN_TTS
+				qwen_tts_realtime(tts_sock, llm_reply);
+#else
 				cosyvoice_tts(tts_sock, llm_reply);
+#endif
 				zsock_close(tts_sock);
 				LOG_INF("TTS probe total %lld ms",
 					k_uptime_get() - tts_t0);
@@ -2514,6 +2765,7 @@ static void ai_worker(void *p1, void *p2, void *p3)
 #endif
 #endif
 
+#if AI_USE_REALTIME
 		int sock = -1;
 		ret = tls_connect(&sock);
 		if (ret) {
@@ -2525,6 +2777,7 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		ret = realtime_voice_session(sock, record_pcm, num_samples);
 
 		zsock_close(sock);
+#endif /* AI_USE_REALTIME */
 
 		current_state = AI_STATE_READY;
 		LOG_INF("Ready for next question");
