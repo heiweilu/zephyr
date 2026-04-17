@@ -67,6 +67,12 @@ LOG_MODULE_REGISTER(ai_service, LOG_LEVEL_INF);
 #define LLM_MODEL "qwen-turbo"
 #define AI_DEBUG_PIPELINE_LLM 1
 
+/* Plan-A pipeline step 2-B: feed LLM reply to existing cosyvoice_tts so
+ * the device actually speaks the reply. cosyvoice_tts() already handles
+ * WebSocket upgrade and streamed PCM playback via audio_stream_*.
+ */
+#define AI_DEBUG_PIPELINE_TTS 1
+
 /* Match the known-good OpenSSL probe as closely as the socket API allows. */
 #define AI_TLS_CIPHERSUITE_ECDHE_RSA_AES128_GCM_SHA256 0xC02F
 
@@ -1511,6 +1517,7 @@ static size_t json_escape_str(const char *src, char *dst, size_t dst_max)
 static int cosyvoice_tts(int sock, const char *text)
 {
 	int ret;
+	int64_t tts_t0 = k_uptime_get();
 
 	LOG_INF("TTS: starting CosyVoice for %zu bytes of text", strlen(text));
 
@@ -1619,25 +1626,34 @@ static int cosyvoice_tts(int sock, const char *text)
 	if (ret) goto cleanup;
 	LOG_INF("TTS: finish-task sent");
 
-	/* 8. Receive binary PCM frames until task-finished */
+	/* 8. Receive binary PCM frames until task-finished.
+	 * Plan-A step 2-F: revert to "collect all then play". The cosyvoice
+	 * server on the current account drips audio at ~18x slower than
+	 * realtime, so any streaming/prebuffer strategy still underruns I2S
+	 * after the buffer drains. Collecting all chunks first avoids the
+	 * stutter. Per-chunk arrival times are still logged so we can
+	 * measure server behaviour and decide on a faster TTS model next.
+	 */
 	{
 		struct ws_frame frame;
 		char json_buf[1024];
-		int16_t *pcm_out = rsp_pcm_24k;  /* reuse as PCM collect buffer */
-		int total_samples = 0;
+		int16_t *pcm_out = rsp_pcm_24k;  /* grow-only accumulator */
 		int max_samples = MAX_RSP_PCM_24K;
 		int pcm_chunks = 0;
+		int total_samples = 0;
 		bool finished = false;
 
 		while (!finished) {
 			if (ws_recv_frame_header(sock, &frame) < 0) break;
 
 			if (frame.opcode == WS_OP_BINARY) {
-				/* PCM audio data */
+				int chunk_start = total_samples;
+				int chunk_samples = 0;
 				size_t remaining = frame.payload_len;
 				while (remaining > 0) {
-					size_t avail = (max_samples - total_samples)
-						       * sizeof(int16_t);
+					size_t avail = (max_samples -
+						(chunk_start + chunk_samples))
+						* sizeof(int16_t);
 					size_t to_read = remaining;
 					if (to_read > avail) to_read = avail;
 					if (to_read == 0) {
@@ -1645,15 +1661,25 @@ static int cosyvoice_tts(int sock, const char *text)
 						break;
 					}
 					if (sock_read_n(sock,
-							(uint8_t *)&pcm_out[total_samples],
-							to_read) < 0) {
+						(uint8_t *)&pcm_out[
+							chunk_start + chunk_samples],
+						to_read) < 0) {
 						finished = true;
 						break;
 					}
-					total_samples += to_read / sizeof(int16_t);
+					chunk_samples += to_read / sizeof(int16_t);
 					remaining -= to_read;
 				}
-				pcm_chunks++;
+
+				if (chunk_samples > 0) {
+					total_samples = chunk_start + chunk_samples;
+					pcm_chunks++;
+					LOG_INF("TTS: chunk %d at T+%lld ms, "
+						"+%d samples (total %d)",
+						pcm_chunks,
+						k_uptime_get() - tts_t0,
+						chunk_samples, total_samples);
+				}
 			} else if (frame.opcode == WS_OP_TEXT) {
 				size_t rd = frame.payload_len;
 				if (rd >= sizeof(json_buf))
@@ -1669,16 +1695,17 @@ static int cosyvoice_tts(int sock, const char *text)
 				if (strstr(json_buf, "task-finished")) {
 					finished = true;
 					LOG_INF("TTS: task finished, %d chunks, "
-						"%d samples (%.1fs)",
+						"%d samples (%.1fs audio) at "
+						"T+%lld ms",
 						pcm_chunks, total_samples,
-						(float)total_samples / 16000.0f);
+						(float)total_samples / 16000.0f,
+						k_uptime_get() - tts_t0);
 				} else if (strstr(json_buf, "task-failed")) {
 					LOG_ERR("TTS: task failed: %s",
 						json_buf);
 					finished = true;
 				}
 			} else if (frame.opcode == WS_OP_PING) {
-				/* Reply with pong */
 				ws_skip_payload(sock, frame.payload_len);
 				ws_send_frame(sock, WS_OP_PONG, NULL, 0);
 			} else if (frame.opcode == WS_OP_CLOSE) {
@@ -1689,12 +1716,15 @@ static int cosyvoice_tts(int sock, const char *text)
 			}
 		}
 
-		/* 9. Play collected PCM */
+		/* 9. Play all collected PCM as a single continuous buffer. */
 		if (total_samples > 0) {
-			LOG_INF("TTS: playing %d samples (%.1fs)",
+			LOG_INF("TTS: playing %d samples (%.1fs) at T+%lld ms",
 				total_samples,
-				(float)total_samples / 16000.0f);
+				(float)total_samples / 16000.0f,
+				k_uptime_get() - tts_t0);
 			audio_play(pcm_out, total_samples);
+		} else {
+			LOG_WRN("TTS: no audio received");
 		}
 	}
 
@@ -2440,9 +2470,9 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		 * qwen-turbo LLM on a separate TLS socket. Reply is logged
 		 * only; Realtime flow below is still unchanged.
 		 */
+		char llm_reply[512] = {0};
 		if (asr_text[0] != '\0') {
 			int llm_sock = -1;
-			char llm_reply[512];
 			int64_t llm_t0 = k_uptime_get();
 			int lr = tls_connect(&llm_sock);
 			if (lr == 0) {
@@ -2459,6 +2489,28 @@ static void ai_worker(void *p1, void *p2, void *p3)
 		} else {
 			LOG_WRN("LLM probe skipped: ASR text empty");
 		}
+
+#if AI_DEBUG_PIPELINE_TTS
+		/* Plan-A step 2-B: speak the LLM reply via existing
+		 * cosyvoice_tts (WebSocket, streamed PCM playback).
+		 */
+		if (llm_reply[0] != '\0') {
+			int tts_sock = -1;
+			int64_t tts_t0 = k_uptime_get();
+			int tr = tls_connect(&tts_sock);
+			if (tr == 0) {
+				cosyvoice_tts(tts_sock, llm_reply);
+				zsock_close(tts_sock);
+				LOG_INF("TTS probe total %lld ms",
+					k_uptime_get() - tts_t0);
+			} else {
+				LOG_WRN("TTS probe: tls_connect failed: %d",
+					tr);
+			}
+		} else {
+			LOG_WRN("TTS probe skipped: LLM reply empty");
+		}
+#endif
 #endif
 #endif
 
