@@ -1,8 +1,7 @@
-/* CHD-ESP32-S3-BOX Launcher: Unified DTS Overlay
+/* Camera firmware DTS overlay for CHD-ESP32-S3-BOX
  *
- * Merges: LCD (SPI3) + BLE HCI + I2C0 + I2S0 + PA + BOOT Button + USB Console
- *
- * Phase 1: LCD + BLE only (I2C/I2S/Camera nodes present but used in later phases)
+ * Pure camera build: LCD (ST7789V on SPI3) + LCD-CAM (DVP/OV3660) + I2C0 +
+ * BOOT button. NO BT, NO I2S, NO SDMMC.
  */
 
 #include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
@@ -55,15 +54,7 @@
 		};
 	};
 
-	/* ── PA enable (IO46 = gpio1 pin 14) ── */
-	leds {
-		compatible = "gpio-leds";
-		pa_enable: pa {
-			gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
-		};
-	};
-
-	/* ── BOOT button (IO0, push-to-talk / SD_CMD conflict) ── */
+	/* ── BOOT button (IO0) ── */
 	buttons {
 		compatible = "gpio-keys";
 		boot_button: boot_button {
@@ -77,19 +68,11 @@
 	};
 };
 
-/* ── USB Serial Console ── */
 &usb_serial {
 	status = "okay";
 };
 
-/* ── BLE HCI ── */
-&esp32_bt_hci {
-	status = "okay";
-};
-
-/* ── Pin Control ── */
 &pinctrl {
-	/* SPI3: LCD (SCK=IO7, CS=IO5, MOSI=IO6) */
 	spim3_default: spim3_default {
 		group1 {
 			pinmux = <SPIM3_SCLK_GPIO7>,
@@ -101,7 +84,6 @@
 		};
 	};
 
-	/* I2C0: ES8311(0x18) + ES7210(0x40) + OV3660(0x3C) + ICM-42607 */
 	i2c0_default: i2c0_default {
 		group1 {
 			pinmux = <I2C0_SDA_GPIO8>,
@@ -112,7 +94,6 @@
 		};
 	};
 
-	/* LCD-CAM peripheral pins (parallel DVP + PCLK + CAMCLK) */
 	lcd_cam_default: lcd_cam_default {
 		group1 {
 			pinmux = <LCD_CAM_CAM_CLK_GPIO39>;
@@ -134,24 +115,8 @@
 			bias-disable;
 		};
 	};
-
-	/* I2S0: Audio (MCLK=IO2, BCLK=IO17, WS=IO45, DOUT=IO15, DIN=IO16) */
-	i2s0_default: i2s0_default {
-		group1 {
-			pinmux = <I2S0_MCLK_GPIO2>,
-				 <I2S0_O_WS_GPIO45>,
-				 <I2S0_O_BCK_GPIO17>,
-				 <I2S0_O_SD_GPIO15>;
-			output-enable;
-		};
-		group2 {
-			pinmux = <I2S0_I_SD_GPIO16>;
-			input-enable;
-		};
-	};
 };
 
-/* ── SPI3: LCD ── */
 &spi3 {
 	#address-cells = <1>;
 	#size-cells = <0>;
@@ -160,7 +125,6 @@
 	pinctrl-names = "default";
 };
 
-/* ── I2C0: Shared bus ── */
 &i2c0 {
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
@@ -180,7 +144,6 @@
 	};
 };
 
-/* ── LCD-CAM (DVP camera capture) ── */
 &lcd_cam {
 	status = "okay";
 	cam-clk = <16000000>;
@@ -197,14 +160,6 @@
 	};
 };
 
-/* ── I2S0: Audio TX/RX ── */
-i2s_rxtx: &i2s0 {
-	pinctrl-0 = <&i2s0_default>;
-	pinctrl-names = "default";
-	status = "okay";
-};
-
-/* ── DMA (for I2S + Camera) ── */
 &dma {
 	status = "okay";
 };
