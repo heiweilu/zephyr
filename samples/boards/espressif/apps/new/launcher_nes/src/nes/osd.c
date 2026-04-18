@@ -179,9 +179,10 @@ void log_assert(int expr, int line, const char *file, char *msg)
  * called it `pa_gpio` — keep both names compiling on each variant. */
 #define PA_NODE       DT_NODELABEL(pa_enable)
 
-/* Audio TX slab buffer placed in PSRAM (~14 KB) to spare DRAM. */
-K_MEM_SLAB_DEFINE_IN_SECT_STATIC(audio_tx_slab,
-	Z_GENERIC_SECTION(.ext_ram.bss),
+/* Audio TX slab buffer in DRAM — ESP32-S3 I2S DMA cannot reliably read
+ * PSRAM (cache coherency / latency causes audible glitches & static).
+ * 14 KB still fits within DRAM headroom. */
+K_MEM_SLAB_DEFINE_STATIC(audio_tx_slab,
 	AUDIO_BLOCK_SIZE, AUDIO_BLOCK_COUNT, 4);
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
