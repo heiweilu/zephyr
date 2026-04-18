@@ -29,6 +29,7 @@
 #include "jpeg_enc.h"
 #include "ai_client.h"
 #include "audio.h"
+#include "tts_client.h"
 
 /* Step 1b-1a: encode a synthetic gradient at boot, dump JPEG hex over UART.
  * Set to 0 to skip (re-enable normal LIVE mode without delay). */
@@ -477,6 +478,17 @@ int main(void)
 						int pr = ai_client_post_jpeg(snap_jpeg, jpeg_len);
 						if (pr < 0) {
 							LOG_ERR("ai_client_post_jpeg failed: %d", pr);
+						} else {
+							/* Phase 1b-3b: speak the caption via CosyVoice TTS */
+							static char caption[512];
+							int n = ai_client_get_caption(caption, sizeof(caption));
+							if (n > 0) {
+								LOG_INF("caption (%d B): %s", n, caption);
+								int tr = tts_client_speak(caption);
+								if (tr < 0) LOG_ERR("tts_client_speak: %d", tr);
+							} else {
+								LOG_WRN("no caption found in response");
+							}
 						}
 					}
 				}

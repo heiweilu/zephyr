@@ -16,4 +16,12 @@ int ai_client_init(void);
  */
 int ai_client_post_jpeg(const uint8_t *jpeg, size_t jpeg_len);
 
+/*
+ * Extract the qwen-vl-plus caption text from the most recent response
+ * (i.e. the value of choices[0].message.content). Returns the number of
+ * bytes written to `out` (excluding NUL terminator), 0 if not found.
+ * Performs minimal JSON unescape of \", \\ and \n.
+ */
+int ai_client_get_caption(char *out, size_t out_max);
+
 #endif /* AI_CLIENT_H_ */

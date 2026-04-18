@@ -256,3 +256,36 @@ int ai_client_post_jpeg(const uint8_t *jpeg, size_t jpeg_len)
 
 	return ret;
 }
+
+/* Extract choices[0].message.content from resp_buf (last response). */
+int ai_client_get_caption(char *out, size_t out_max)
+{
+	if (!out || out_max == 0) return 0;
+	out[0] = '\0';
+
+	const char *p = strstr((const char *)resp_buf, "\"content\":\"");
+	if (!p) return 0;
+	p += 11; /* skip "content":" */
+
+	size_t i = 0;
+	while (*p && i + 1 < out_max) {
+		char c = *p++;
+		if (c == '\\' && *p) {
+			char esc = *p++;
+			switch (esc) {
+			case 'n':  out[i++] = '\n'; break;
+			case 't':  out[i++] = '\t'; break;
+			case '"':  out[i++] = '"';  break;
+			case '\\': out[i++] = '\\'; break;
+			case '/':  out[i++] = '/';  break;
+			default:   out[i++] = esc;  break;
+			}
+		} else if (c == '"') {
+			break; /* end of string */
+		} else {
+			out[i++] = c;
+		}
+	}
+	out[i] = '\0';
+	return (int)i;
+}
