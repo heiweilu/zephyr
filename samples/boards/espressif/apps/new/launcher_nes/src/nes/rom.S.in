@@ -1,0 +1,19 @@
+/*
+ * rom.S.in — NES ROM embedded binary (CMake configure_file template)
+ *
+ * CMakeLists.txt substitutes @NES_ROM_FILE@ with the absolute path of
+ * the ROM before passing this file to the assembler.
+ *
+ * Exported symbols (declared extern in osd.c):
+ *   nes_rom      — first byte of the iNES file
+ *   nes_rom_end  — one past the last byte
+ */
+
+	.section .rodata
+	.global nes_rom
+	.global nes_rom_end
+	.align  4
+nes_rom:
+	.incbin "@NES_ROM_FILE@"
+nes_rom_end:
+	.align  4
