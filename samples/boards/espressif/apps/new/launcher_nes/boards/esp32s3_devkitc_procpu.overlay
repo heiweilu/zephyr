@@ -1,0 +1,210 @@
+/* CHD-ESP32-S3-BOX Launcher: Unified DTS Overlay
+ *
+ * Merges: LCD (SPI3) + BLE HCI + I2C0 + I2S0 + PA + BOOT Button + USB Console
+ *
+ * Phase 1: LCD + BLE only (I2C/I2S/Camera nodes present but used in later phases)
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+#include <zephyr/dt-bindings/mipi_dbi/mipi_dbi.h>
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,display = &st7789v;
+		zephyr,camera = &lcd_cam;
+	};
+
+	/* ── LCD: ST7789V 320x240 SPI ── */
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		dc-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+		spi-dev = <&spi3>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		st7789v: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			mipi-max-frequency = <80000000>;
+			reg = <0>;
+			width = <320>;
+			height = <240>;
+			x-offset = <0>;
+			y-offset = <0>;
+			vcom = <0x19>;
+			gctrl = <0x35>;
+			vrhs = <0x12>;
+			vdvs = <0x20>;
+			mdac = <0x60>;
+			gamma = <0x01>;
+			colmod = <0x55>;
+			inversion-off;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [D0 04 0D 11 13 2B 3F 54 4C 18 0D 0B 1F 23];
+			nvgam-param = [D0 04 0C 11 13 2C 3F 44 51 2F 1F 1F 20 23];
+			ram-param = [00 F0];
+			rgb-param = [CD 08 14];
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+		};
+	};
+
+	/* ── PA enable (IO46 = gpio1 pin 14) ── */
+	leds {
+		compatible = "gpio-leds";
+		pa_enable: pa {
+			gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	/* ── BOOT button (IO0, push-to-talk / SD_CMD conflict) ── */
+	buttons {
+		compatible = "gpio-keys";
+		boot_button: boot_button {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT Button";
+		};
+	};
+
+	aliases {
+		sw0 = &boot_button;
+	};
+};
+
+/* ── USB Serial Console ── */
+&usb_serial {
+	status = "okay";
+};
+
+/* ── BLE HCI ── */
+&esp32_bt_hci {
+	status = "okay";
+};
+
+/* ── Pin Control ── */
+&pinctrl {
+	/* SPI3: LCD (SCK=IO7, CS=IO5, MOSI=IO6) */
+	spim3_default: spim3_default {
+		group1 {
+			pinmux = <SPIM3_SCLK_GPIO7>,
+				 <SPIM3_CSEL_GPIO5>;
+		};
+		group2 {
+			pinmux = <SPIM3_MOSI_GPIO6>;
+			output-low;
+		};
+	};
+
+	/* I2C0: ES8311(0x18) + ES7210(0x40) + OV3660(0x3C) + ICM-42607 */
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO18>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	/* LCD-CAM peripheral pins (parallel DVP + PCLK + CAMCLK) */
+	lcd_cam_default: lcd_cam_default {
+		group1 {
+			pinmux = <LCD_CAM_CAM_CLK_GPIO39>;
+			output-enable;
+		};
+		group2 {
+			pinmux = <LCD_CAM_V_SYNC_CAM_GPIO42>,
+				 <LCD_CAM_H_ENABLE_CAM_GPIO41>,
+				 <LCD_CAM_CAM_PCLK_GPIO14>,
+				 <LCD_CAM_DATA_IN0_GPIO12>,
+				 <LCD_CAM_DATA_IN1_GPIO10>,
+				 <LCD_CAM_DATA_IN2_GPIO9>,
+				 <LCD_CAM_DATA_IN3_GPIO11>,
+				 <LCD_CAM_DATA_IN4_GPIO13>,
+				 <LCD_CAM_DATA_IN5_GPIO21>,
+				 <LCD_CAM_DATA_IN6_GPIO38>,
+				 <LCD_CAM_DATA_IN7_GPIO40>;
+			input-enable;
+			bias-disable;
+		};
+	};
+
+	/* I2S0: Audio (MCLK=IO2, BCLK=IO17, WS=IO45, DOUT=IO15, DIN=IO16) */
+	i2s0_default: i2s0_default {
+		group1 {
+			pinmux = <I2S0_MCLK_GPIO2>,
+				 <I2S0_O_WS_GPIO45>,
+				 <I2S0_O_BCK_GPIO17>,
+				 <I2S0_O_SD_GPIO15>;
+			output-enable;
+		};
+		group2 {
+			pinmux = <I2S0_I_SD_GPIO16>;
+			input-enable;
+		};
+	};
+};
+
+/* ── SPI3: LCD ── */
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim3_default>;
+	pinctrl-names = "default";
+};
+
+/* ── I2C0: Shared bus ── */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+
+	ov3660: ov3660@3c {
+		compatible = "ovti,ov3660";
+		reg = <0x3c>;
+		status = "okay";
+
+		port {
+			ov3660_ep_out: endpoint {
+				remote-endpoint = <&dvp_ep_in>;
+			};
+		};
+	};
+};
+
+/* ── LCD-CAM (DVP camera capture) ── */
+&lcd_cam {
+	status = "okay";
+	cam-clk = <16000000>;
+	pinctrl-0 = <&lcd_cam_default>;
+	pinctrl-names = "default";
+	source = <&ov3660>;
+	dmas = <&dma 2>;
+	dma-names = "rx";
+
+	port {
+		dvp_ep_in: endpoint {
+			remote-endpoint = <&ov3660_ep_out>;
+		};
+	};
+};
+
+/* ── I2S0: Audio TX/RX ── */
+i2s_rxtx: &i2s0 {
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* ── DMA (for I2S + Camera) ── */
+&dma {
+	status = "okay";
+};

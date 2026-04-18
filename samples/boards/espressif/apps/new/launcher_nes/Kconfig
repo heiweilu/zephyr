@@ -1,0 +1,11 @@
+mainmenu "Launcher App Configuration"
+
+config AI_AUTO_DEBUG
+	bool "Auto-trigger AI TLS test on boot (debug mode)"
+	default n
+	help
+	  When enabled, the AI service starts automatically on boot
+	  and sends a minimal HTTP request to verify TLS connectivity,
+	  without requiring a button press or UI interaction.
+
+source "Kconfig.zephyr"
