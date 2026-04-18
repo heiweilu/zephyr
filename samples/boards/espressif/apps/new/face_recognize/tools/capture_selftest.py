@@ -24,7 +24,7 @@ baud = 115200
 total_timeout_s = 60
 
 print(f"Target: {port} @ {baud}, output: {out_path}")
-print(">>> Press the board's RST/EN button NOW. <<<")
+print(">>> When ready: press BOOT (snapshot) or RST (selftest) on the board. <<<")
 
 start = time.time()
 got_begin = False

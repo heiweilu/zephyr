@@ -30,7 +30,7 @@
 
 /* Step 1b-1a: encode a synthetic gradient at boot, dump JPEG hex over UART.
  * Set to 0 to skip (re-enable normal LIVE mode without delay). */
-#define JPEG_SELFTEST 1
+#define JPEG_SELFTEST 0
 
 LOG_MODULE_REGISTER(face_recog, LOG_LEVEL_INF);
 
@@ -58,6 +58,60 @@ static volatile bool      g_btn_event;
 static uint8_t snapshot[CAM_BYTES] __attribute__((section(".ext_ram.bss"), aligned(4)));
 /* Pre-filled solid-blue full-screen buffer for the UPLOADING state. */
 static uint8_t blue_screen[CAM_BYTES] __attribute__((section(".ext_ram.bss"), aligned(4)));
+
+/* PSRAM scratch for RGB565→RGB888 conversion + JPEG output of the snapshot.
+ * Always allocated (selftest reuses the same backing pages via overlap if
+ * JPEG_SELFTEST is enabled — but selftest is now off by default). */
+#define SNAP_RGB888_BYTES  (CAM_W * CAM_H * 3)
+#define SNAP_JPEG_BYTES    (48 * 1024)
+static uint8_t snap_rgb888[SNAP_RGB888_BYTES]
+	__attribute__((section(".ext_ram.bss"), aligned(4)));
+static uint8_t snap_jpeg[SNAP_JPEG_BYTES]
+	__attribute__((section(".ext_ram.bss"), aligned(4)));
+
+/* Convert one RGB565 (big-endian, as written by LCD-CAM DMA) frame to RGB888
+ * and run jpeg_enc on it.  Dumps the JPEG hex over UART between the same
+ * JPEG_BEGIN/JPEG_END markers used by the selftest, so the host tools
+ * (capture_selftest.py + hex_to_jpg.ps1) work unchanged. */
+static void dump_snapshot_as_jpeg(int quality)
+{
+	const uint8_t *src = snapshot;
+	uint8_t *dst = snap_rgb888;
+	for (int i = 0; i < CAM_W * CAM_H; i++) {
+		uint8_t hi = src[2 * i + 0];
+		uint8_t lo = src[2 * i + 1];
+		uint16_t p = ((uint16_t)hi << 8) | lo;
+		uint8_t r5 = (p >> 11) & 0x1F;
+		uint8_t g6 = (p >> 5)  & 0x3F;
+		uint8_t b5 =  p        & 0x1F;
+		dst[3 * i + 0] = (uint8_t)((r5 << 3) | (r5 >> 2));
+		dst[3 * i + 1] = (uint8_t)((g6 << 2) | (g6 >> 4));
+		dst[3 * i + 2] = (uint8_t)((b5 << 3) | (b5 >> 2));
+	}
+
+	int64_t t0 = k_uptime_get();
+	int n = jpeg_encode_rgb888(snap_jpeg, SNAP_JPEG_BYTES,
+				   snap_rgb888, CAM_W, CAM_H, quality);
+	int64_t dt = k_uptime_get() - t0;
+
+	printk("\n=== JPEG SNAPSHOT ===\n");
+	printk("encode result=%d bytes, took %lld ms (q=%d)\n", n, dt, quality);
+	if (n <= 0) {
+		printk("=== JPEG SNAPSHOT FAILED ===\n");
+		return;
+	}
+	printk("JPEG_BEGIN size=%d\n", n);
+	for (int i = 0; i < n; i++) {
+		printk("%02x", snap_jpeg[i]);
+		if ((i % 32) == 31) {
+			printk("\n");
+		}
+	}
+	if ((n % 32) != 0) {
+		printk("\n");
+	}
+	printk("JPEG_END\n=== JPEG SNAPSHOT DONE ===\n\n");
+}
 
 #if JPEG_SELFTEST
 /* RGB888 test pattern + JPEG output (PSRAM-backed). */
@@ -382,12 +436,18 @@ int main(void)
 				g_mode = MODE_UPLOADING;
 				fill_screen_blue(display_dev);
 
+				/* Step 1b-1b: encode the snapshot RIGHT HERE (cam stopped,
+				 * WiFi not up yet → safe LCD-CAM, deterministic timing). */
+				if (have_snapshot) {
+					dump_snapshot_as_jpeg(50);
+				}
+
 				ret = wifi_up();
 				if (ret) {
 					LOG_ERR("wifi_up failed: %d, going to RESULT anyway", ret);
 				}
-				/* Phase 1b: replace this 2s sleep with HTTP POST */
-				LOG_INF("[Phase 1b TODO] would POST snapshot to qwen-vl-plus here");
+				/* Phase 1b-2 will replace this 2s sleep with HTTP POST */
+				LOG_INF("[Phase 1b-2 TODO] would POST JPEG to qwen-vl-plus here");
 				k_sleep(K_SECONDS(2));
 
 				LOG_INF("Mode UPLOADING → RESULT");
