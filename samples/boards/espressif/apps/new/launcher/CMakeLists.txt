@@ -8,6 +8,7 @@ zephyr_compile_definitions(MBEDTLS_X509_RSASSA_PSS_SUPPORT)
 # ── Core sources ──
 target_sources(app PRIVATE
     src/main.c
+    src/boot_splash.c
     src/app_manager.c
     src/launcher_ui.c
     src/ble_hid.c

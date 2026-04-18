@@ -23,6 +23,7 @@
 #include "app_manager.h"
 #include "launcher_ui.h"
 #include "ai_service.h"
+#include "boot_splash.h"
 
 /* ── App module declarations ─────────────────────────── */
 
@@ -135,6 +136,8 @@ int main(void)
 	lv_obj_set_style_border_width(cursor, 2, 0);
 	lv_obj_set_style_border_color(cursor, lv_color_white(), 0);
 	lv_indev_set_cursor(mouse_indev, cursor);
+	/* Hide cursor during boot splash; revealed after launcher home loads */
+	lv_obj_add_flag(cursor, LV_OBJ_FLAG_HIDDEN);
 
 	/* 6. LVGL Keyboard Input */
 	lv_indev_t *kb_indev = lv_indev_create();
@@ -144,6 +147,13 @@ int main(void)
 	lv_group_t *group = lv_group_create();
 	lv_indev_set_group(kb_indev, group);
 	app_manager_set_kb_group(group);
+
+	/* 6.5 First render so display is initialized, then turn backlight visible */
+	lv_timer_handler();
+	display_blanking_off(display);
+
+	/* 6.6 Linux-style dmesg boot splash (~2.5s, blocking) */
+	boot_splash_run(display);
 
 	/* 7. Register all apps */
 	app_manager_register(&app_ai_assistant);
@@ -158,15 +168,17 @@ int main(void)
 	/* 8. Build launcher home screen */
 	launcher_ui_init();
 
+	/* Splash done -- show mouse cursor now */
+	lv_obj_clear_flag(cursor, LV_OBJ_FLAG_HIDDEN);
+
 #if defined(CONFIG_AI_AUTO_DEBUG)
 	/* Auto-debug: start AI service immediately (no need to open the app) */
 	printk("[AUTO-DEBUG] Starting AI service automatically...\n");
 	ai_service_init();
 #endif
 
-	/* 9. First render + display on */
+	/* 9. First render of launcher home (display already on after splash) */
 	lv_timer_handler();
-	display_blanking_off(display);
 	printk("[Launcher] Running...\n");
 
 	/* ── Main loop ──────────────────────────────────── */
