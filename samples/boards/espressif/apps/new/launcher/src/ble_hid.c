@@ -222,6 +222,17 @@ static void cleanup_stale_bonds(void)
 	}
 }
 
+/* Run cleanup_stale_bonds outside BT stack callbacks (k_work).
+ * Calling bt_unpair inside pairing_failed/disconnected callbacks can
+ * re-enter the SMP/conn callback chain and crash (observed PC=0 fault).
+ */
+static void cleanup_stale_bonds_work_handler(struct k_work *w)
+{
+	ARG_UNUSED(w);
+	cleanup_stale_bonds();
+}
+static K_WORK_DEFINE(cleanup_stale_bonds_work, cleanup_stale_bonds_work_handler);
+
 /* ── HID keycode to LVGL key mapping ─────────────────── */
 
 #define LV_KEY_UP        17
@@ -870,7 +881,11 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 	printk("[BLE] Pairing failed (%s), reason %d — removing bond\n",
 	       addr, reason);
 	bt_unpair(BT_ID_DEFAULT, bt_conn_get_dst(conn));
-	cleanup_stale_bonds();
+	/* Defer wider stale-bond cleanup to work queue: doing extra
+	 * bt_unpair calls inside this BT-stack callback recurses into
+	 * SMP/conn callbacks and faults (PC=0 observed).
+	 */
+	k_work_submit(&cleanup_stale_bonds_work);
 }
 
 static struct bt_conn_auth_cb auth_cb = {
