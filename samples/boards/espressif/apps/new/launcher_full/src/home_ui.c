@@ -25,6 +25,8 @@
 #include <lvgl.h>
 
 #include "home_ui.h"
+#include "app_camera.h"
+#include "app_ai_vision.h"
 
 LOG_MODULE_REGISTER(home_ui, LOG_LEVEL_INF);
 
@@ -185,9 +187,16 @@ void home_ui_activate_selected(void)
 {
 	LOG_INF("activate %d (%s)", selected, icons[selected].name);
 	if (selected == APP_AI_VISION) {
-		toast_show("AI Vision - wired in 2e");
+		toast_show("AI Vision starting...");
+		lv_refr_now(NULL);
+		app_ai_vision_run();
 	} else if (selected == APP_CAMERA) {
-		toast_show("Camera - wired in 2d");
+		toast_show("Camera starting...");
+		/* Flush a frame so the toast is visible before camera takes
+		 * over the LCD. app_camera_run() never returns.
+		 */
+		lv_refr_now(NULL);
+		app_camera_run();
 	} else {
 		toast_show("Coming soon");
 	}

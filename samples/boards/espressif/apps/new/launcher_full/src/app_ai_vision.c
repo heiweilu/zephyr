@@ -372,11 +372,10 @@ static void play_boot_beep(void)
 	LOG_INF("beep done");
 }
 
-int main(void)
+int app_ai_vision_run(void)
 {
 	const struct device *const camera_dev  = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
 	const struct device *const display_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
-	const struct device *const gpio1       = DEVICE_DT_GET(DT_NODELABEL(gpio1));
 	struct video_format fmt = {
 		.type        = VIDEO_BUF_TYPE_OUTPUT,
 		.pixelformat = VIDEO_PIX_FMT_RGB565,
@@ -386,17 +385,13 @@ int main(void)
 	};
 	int ret;
 
-	printk("\n=== CHD-ESP32-S3-BOX Face Recognize firmware (Step 1a) ===\n");
+	printk("\n=== launcher_full :: AI Vision (entered from HOME) ===\n");
 
 	if (!device_is_ready(camera_dev) || !device_is_ready(display_dev)) {
 		printk("device not ready\n");
 		return 0;
 	}
-	if (device_is_ready(gpio1)) {
-		gpio_pin_configure(gpio1, BL_PIN, GPIO_OUTPUT_ACTIVE);
-		gpio_pin_set(gpio1, BL_PIN, 1);
-	}
-	display_blanking_off(display_dev);
+	/* Backlight + display_blanking are already on (set by main.c). */
 
 	/* Step 1b-3a: ES8311 + I2S boot self-test */
 	play_boot_beep();
@@ -460,7 +455,15 @@ int main(void)
 
 				LOG_INF("Mode LIVE → UPLOADING");
 				g_mode = MODE_UPLOADING;
-				fill_screen_blue(display_dev);
+				/* Show the snapshot we just took (instead of blue) so the
+				 * user sees the picture they captured while WiFi/HTTPS/TTS
+				 * crunch in the background. Fall back to blue if for some
+				 * reason no snapshot exists. */
+				if (have_snapshot) {
+					blit_snapshot(display_dev);
+				} else {
+					fill_screen_blue(display_dev);
+				}
 
 				/* Step 1b-1b: encode the snapshot RIGHT HERE (cam stopped,
 				 * WiFi not up yet → safe LCD-CAM, deterministic timing). */

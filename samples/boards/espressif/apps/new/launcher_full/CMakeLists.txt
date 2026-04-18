@@ -13,11 +13,10 @@ project(launcher_full)
 target_sources(app PRIVATE
 	src/main.c
 	src/home_ui.c
+	src/app_camera.c
+	src/app_ai_vision.c
+	src/jpeg_enc.c
+	src/ai_client.c
+	src/audio.c
+	src/tts_client.c
 )
-
-# Phase 2d/2e will re-add:
-#   src/app_ai_vision.c
-#   src/jpeg_enc.c
-#   src/ai_client.c
-#   src/audio.c
-#   src/tts_client.c
