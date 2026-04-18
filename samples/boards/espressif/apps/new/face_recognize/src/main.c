@@ -27,6 +27,7 @@
 
 #include "secrets.h"
 #include "jpeg_enc.h"
+#include "ai_client.h"
 
 /* Step 1b-1a: encode a synthetic gradient at boot, dump JPEG hex over UART.
  * Set to 0 to skip (re-enable normal LIVE mode without delay). */
@@ -73,7 +74,7 @@ static uint8_t snap_jpeg[SNAP_JPEG_BYTES]
  * and run jpeg_enc on it.  Dumps the JPEG hex over UART between the same
  * JPEG_BEGIN/JPEG_END markers used by the selftest, so the host tools
  * (capture_selftest.py + hex_to_jpg.ps1) work unchanged. */
-static void dump_snapshot_as_jpeg(int quality)
+static int dump_snapshot_as_jpeg(int quality)
 {
 	const uint8_t *src = snapshot;
 	uint8_t *dst = snap_rgb888;
@@ -98,7 +99,7 @@ static void dump_snapshot_as_jpeg(int quality)
 	printk("encode result=%d bytes, took %lld ms (q=%d)\n", n, dt, quality);
 	if (n <= 0) {
 		printk("=== JPEG SNAPSHOT FAILED ===\n");
-		return;
+		return n;
 	}
 	printk("JPEG_BEGIN size=%d\n", n);
 	for (int i = 0; i < n; i++) {
@@ -111,6 +112,7 @@ static void dump_snapshot_as_jpeg(int quality)
 		printk("\n");
 	}
 	printk("JPEG_END\n=== JPEG SNAPSHOT DONE ===\n\n");
+	return n;
 }
 
 #if JPEG_SELFTEST
@@ -438,17 +440,23 @@ int main(void)
 
 				/* Step 1b-1b: encode the snapshot RIGHT HERE (cam stopped,
 				 * WiFi not up yet → safe LCD-CAM, deterministic timing). */
+				int jpeg_len = 0;
 				if (have_snapshot) {
-					dump_snapshot_as_jpeg(50);
+					jpeg_len = dump_snapshot_as_jpeg(50);
 				}
 
 				ret = wifi_up();
 				if (ret) {
-					LOG_ERR("wifi_up failed: %d, going to RESULT anyway", ret);
+					LOG_ERR("wifi_up failed: %d, skipping POST", ret);
+				} else if (jpeg_len > 0) {
+					/* Phase 1b-2: POST jpeg to qwen-vl-plus, dump response. */
+					if (ai_client_init() == 0) {
+						int pr = ai_client_post_jpeg(snap_jpeg, jpeg_len);
+						if (pr < 0) {
+							LOG_ERR("ai_client_post_jpeg failed: %d", pr);
+						}
+					}
 				}
-				/* Phase 1b-2 will replace this 2s sleep with HTTP POST */
-				LOG_INF("[Phase 1b-2 TODO] would POST JPEG to qwen-vl-plus here");
-				k_sleep(K_SECONDS(2));
 
 				LOG_INF("Mode UPLOADING → RESULT");
 				g_mode = MODE_RESULT;
