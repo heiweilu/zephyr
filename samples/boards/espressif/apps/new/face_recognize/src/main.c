@@ -28,6 +28,7 @@
 #include "secrets.h"
 #include "jpeg_enc.h"
 #include "ai_client.h"
+#include "audio.h"
 
 /* Step 1b-1a: encode a synthetic gradient at boot, dump JPEG hex over UART.
  * Set to 0 to skip (re-enable normal LIVE mode without delay). */
@@ -351,6 +352,25 @@ static void cam_stop(const struct device *cam)
 
 /* ── main: drives the state machine ── */
 
+/* Step 1b-3a: 1kHz square-wave beep (0.5s @ 16kHz mono, 16-bit) */
+#define BEEP_SAMPLES 8000
+static int16_t beep_pcm[BEEP_SAMPLES] __attribute__((section(".ext_ram.bss")));
+
+static void play_boot_beep(void)
+{
+	if (audio_codec_init() < 0) {
+		LOG_WRN("audio_codec_init failed; skipping beep");
+		return;
+	}
+	/* 1 kHz square wave: at 16 kHz that's 16 samples per period (8 hi / 8 lo) */
+	for (int i = 0; i < BEEP_SAMPLES; i++) {
+		beep_pcm[i] = ((i / 8) & 1) ? 8000 : -8000;
+	}
+	LOG_INF("playing 1kHz / 0.5s boot beep");
+	audio_play(beep_pcm, BEEP_SAMPLES);
+	LOG_INF("beep done");
+}
+
 int main(void)
 {
 	const struct device *const camera_dev  = DEVICE_DT_GET(DT_CHOSEN(zephyr_camera));
@@ -376,6 +396,9 @@ int main(void)
 		gpio_pin_set(gpio1, BL_PIN, 1);
 	}
 	display_blanking_off(display_dev);
+
+	/* Step 1b-3a: ES8311 + I2S boot self-test */
+	play_boot_beep();
 
 	/* Pre-fill the solid-blue buffer (RGB565 BE: 0x001F LE -> 0x1F 00 BE) */
 	for (int i = 0; i < CAM_BYTES; i += 2) {

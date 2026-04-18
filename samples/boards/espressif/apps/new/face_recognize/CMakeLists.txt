@@ -11,4 +11,5 @@ target_sources(app PRIVATE
 	src/main.c
 	src/jpeg_enc.c
 	src/ai_client.c
+	src/audio.c
 )
