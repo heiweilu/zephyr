@@ -289,6 +289,12 @@ int audio_codec_init(void)
 {
 	int ret;
 
+	/* Idempotent: skip if a previous call already brought the codec up. */
+	static bool codec_inited;
+	if (codec_inited) {
+		return 0;
+	}
+
 	/* I2C */
 	i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 	if (!device_is_ready(i2c_dev)) {
@@ -369,6 +375,7 @@ int audio_codec_init(void)
 
 	i2s_configured = true;
 	LOG_INF("Audio codecs ready (16kHz, 16-bit)");
+	codec_inited = true;
 	return 0;
 }
 

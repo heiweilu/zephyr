@@ -27,3 +27,10 @@ target_sources(app PRIVATE
     src/apps/app_face.c
     src/apps/app_imu.c
 )
+
+# ── Embed 30s PCM clip into firmware as a C array (used by app_music) ──
+generate_inc_file_for_target(
+    app
+    src/apps/song1_30s.pcm
+    ${ZEPHYR_BINARY_DIR}/include/generated/song1_30s.pcm.inc
+)
