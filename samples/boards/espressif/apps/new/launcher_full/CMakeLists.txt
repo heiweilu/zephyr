@@ -15,6 +15,7 @@ target_sources(app PRIVATE
 	src/home_ui.c
 	src/app_camera.c
 	src/app_ai_vision.c
+	src/app_imu.c
 	src/jpeg_enc.c
 	src/ai_client.c
 	src/audio.c

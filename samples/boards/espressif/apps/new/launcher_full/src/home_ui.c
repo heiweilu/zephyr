@@ -27,6 +27,7 @@
 #include "home_ui.h"
 #include "app_camera.h"
 #include "app_ai_vision.h"
+#include "app_imu.h"
 
 LOG_MODULE_REGISTER(home_ui, LOG_LEVEL_INF);
 
@@ -197,6 +198,10 @@ void home_ui_activate_selected(void)
 		 */
 		lv_refr_now(NULL);
 		app_camera_run();
+	} else if (selected == APP_IMU) {
+		toast_show("IMU starting...");
+		lv_refr_now(NULL);
+		app_imu_run();
 	} else {
 		toast_show("Coming soon");
 	}
