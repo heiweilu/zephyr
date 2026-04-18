@@ -221,7 +221,7 @@ static void poll_cb(lv_timer_t *timer)
 		break;
 	case AI_STATE_READY:
 		clr = CLR_CIRCLE_IDLE;
-		icon = LV_SYMBOL_AUDIO;
+		icon = LV_SYMBOL_BELL;
 		break;
 	case AI_STATE_RECORDING:
 		clr = CLR_CIRCLE_REC;
@@ -242,7 +242,7 @@ static void poll_cb(lv_timer_t *timer)
 		break;
 	default:
 		clr = CLR_CIRCLE_OFF;
-		icon = LV_SYMBOL_AUDIO;
+		icon = LV_SYMBOL_BELL;
 		break;
 	}
 
@@ -370,7 +370,7 @@ static void on_destroy(void)
 const app_info_t app_ai_assistant = {
 	.name = "AI",
 	.icon_color = LV_COLOR_MAKE(0x63, 0x66, 0xF1),
-	.icon_symbol = LV_SYMBOL_CALL,
+	.icon_symbol = LV_SYMBOL_BELL,
 	.on_create = on_create,
 	.on_destroy = on_destroy,
 };
