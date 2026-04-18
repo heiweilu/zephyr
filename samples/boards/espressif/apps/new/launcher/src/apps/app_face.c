@@ -42,7 +42,7 @@ static void on_destroy(void) {}
 
 const app_info_t app_face = {
 	.name = "Face",
-	.icon_color = LV_COLOR_MAKE(0xF3, 0x9C, 0x12),
+	.icon_color = LV_COLOR_MAKE(0xF5, 0x9E, 0x0B),
 	.icon_symbol = LV_SYMBOL_EYE_OPEN,
 	.on_create = on_create,
 	.on_destroy = on_destroy,

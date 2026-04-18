@@ -42,7 +42,7 @@ static void on_destroy(void) {}
 
 const app_info_t app_terminal = {
 	.name = "Term",
-	.icon_color = LV_COLOR_MAKE(0x34, 0x49, 0x5E),
+	.icon_color = LV_COLOR_MAKE(0x1F, 0x29, 0x37),
 	.icon_symbol = ">_",
 	.on_create = on_create,
 	.on_destroy = on_destroy,

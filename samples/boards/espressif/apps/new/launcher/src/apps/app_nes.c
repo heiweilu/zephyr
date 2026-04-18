@@ -42,7 +42,7 @@ static void on_destroy(void) {}
 
 const app_info_t app_nes = {
 	.name = "NES",
-	.icon_color = LV_COLOR_MAKE(0xE0, 0x14, 0x4C),
+	.icon_color = LV_COLOR_MAKE(0xEF, 0x44, 0x44),
 	.icon_symbol = LV_SYMBOL_PLAY,
 	.on_create = on_create,
 	.on_destroy = on_destroy,

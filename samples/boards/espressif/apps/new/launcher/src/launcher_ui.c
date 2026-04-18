@@ -49,14 +49,19 @@ static lv_obj_t *create_icon(lv_obj_t *parent, int app_id,
 	lv_obj_set_pos(cont, x, y);
 	lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
 
-	/* Colored square icon */
+	/* Colored square icon — raised neumorphic card */
 	lv_obj_t *icon = lv_obj_create(cont);
 	lv_obj_remove_style_all(icon);
 	lv_obj_set_size(icon, ICON_SIZE, ICON_SIZE);
 	lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_set_style_bg_color(icon, app->icon_color, 0);
 	lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(icon, 10, 0);
+	lv_obj_set_style_radius(icon, 12, 0);
+	lv_obj_set_style_shadow_width(icon, 6, 0);
+	lv_obj_set_style_shadow_offset_x(icon, 2, 0);
+	lv_obj_set_style_shadow_offset_y(icon, 3, 0);
+	lv_obj_set_style_shadow_color(icon, lv_color_hex(0xB8BEC9), 0);
+	lv_obj_set_style_shadow_opa(icon, LV_OPA_50, 0);
 	lv_obj_add_flag(icon, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_add_event_cb(icon, icon_click_cb, LV_EVENT_CLICKED,
 			    (void *)(intptr_t)app_id);
@@ -65,13 +70,13 @@ static lv_obj_t *create_icon(lv_obj_t *parent, int app_id,
 	lv_obj_t *sym = lv_label_create(icon);
 	lv_label_set_text(sym, app->icon_symbol ? app->icon_symbol : "?");
 	lv_obj_set_style_text_color(sym, lv_color_white(), 0);
-	lv_obj_set_style_text_font(sym, &lv_font_montserrat_18, 0);
+	lv_obj_set_style_text_font(sym, &lv_font_montserrat_28, 0);
 	lv_obj_center(sym);
 
-	/* Name label below icon */
+	/* Name label below icon — dark gray on light bg */
 	lv_obj_t *lbl = lv_label_create(cont);
 	lv_label_set_text(lbl, app->name);
-	lv_obj_set_style_text_color(lbl, lv_color_hex(0xcccccc), 0);
+	lv_obj_set_style_text_color(lbl, lv_color_hex(0x374151), 0);
 	lv_obj_set_style_text_font(lbl, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
 
@@ -90,31 +95,35 @@ void launcher_ui_init(void)
 {
 	int count = app_manager_get_count();
 
-	/* Create home screen */
+	/* Create home screen — light neumorphic background */
 	home_screen = lv_obj_create(NULL);
-	lv_obj_set_style_bg_color(home_screen, lv_color_hex(0x0f0f23), 0);
+	lv_obj_set_style_bg_color(home_screen, lv_color_hex(0xE6E9EF), 0);
 	lv_obj_set_style_bg_opa(home_screen, LV_OPA_COVER, 0);
 	lv_obj_clear_flag(home_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-	/* Status bar background */
+	/* Status bar background — white card with subtle shadow */
 	lv_obj_t *bar = lv_obj_create(home_screen);
 	lv_obj_remove_style_all(bar);
 	lv_obj_set_size(bar, SCREEN_WIDTH, STATUS_BAR_HEIGHT);
 	lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 0);
-	lv_obj_set_style_bg_color(bar, lv_color_hex(0x16213e), 0);
+	lv_obj_set_style_bg_color(bar, lv_color_hex(0xFFFFFF), 0);
 	lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+	lv_obj_set_style_shadow_width(bar, 6, 0);
+	lv_obj_set_style_shadow_offset_y(bar, 2, 0);
+	lv_obj_set_style_shadow_color(bar, lv_color_hex(0xB8BEC9), 0);
+	lv_obj_set_style_shadow_opa(bar, LV_OPA_40, 0);
 
-	/* Status label */
+	/* Status label — accent green on white */
 	status_label = lv_label_create(bar);
 	lv_label_set_text(status_label, "BLE: Scanning...");
-	lv_obj_set_style_text_color(status_label, lv_color_hex(0x00ff88), 0);
+	lv_obj_set_style_text_color(status_label, lv_color_hex(0x10B981), 0);
 	lv_obj_set_style_text_font(status_label, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(status_label, LV_ALIGN_LEFT_MID, 8, 0);
 
-	/* Title on right side of status bar */
+	/* Title on right side — accent indigo */
 	lv_obj_t *title = lv_label_create(bar);
 	lv_label_set_text(title, "Zephyr-Card");
-	lv_obj_set_style_text_color(title, lv_color_hex(0x8888aa), 0);
+	lv_obj_set_style_text_color(title, lv_color_hex(0x6366F1), 0);
 	lv_obj_set_style_text_font(title, &lv_font_source_han_sans_sc_16_cjk, 0);
 	lv_obj_align(title, LV_ALIGN_RIGHT_MID, -8, 0);
 

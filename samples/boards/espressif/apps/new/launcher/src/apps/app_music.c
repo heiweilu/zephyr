@@ -42,8 +42,8 @@ static void on_destroy(void) {}
 
 const app_info_t app_music = {
 	.name = "Music",
-	.icon_color = LV_COLOR_MAKE(0x9B, 0x59, 0xB6),
-	.icon_symbol = LV_SYMBOL_VOLUME_MAX,
+	.icon_color = LV_COLOR_MAKE(0xA8, 0x55, 0xF7),
+	.icon_symbol = LV_SYMBOL_AUDIO,
 	.on_create = on_create,
 	.on_destroy = on_destroy,
 };

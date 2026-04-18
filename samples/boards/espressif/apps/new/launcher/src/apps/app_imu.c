@@ -42,7 +42,7 @@ static void on_destroy(void) {}
 
 const app_info_t app_imu = {
 	.name = "IMU",
-	.icon_color = LV_COLOR_MAKE(0x1A, 0xBC, 0x9C),
+	.icon_color = LV_COLOR_MAKE(0x14, 0xB8, 0xA6),
 	.icon_symbol = LV_SYMBOL_REFRESH,
 	.on_create = on_create,
 	.on_destroy = on_destroy,

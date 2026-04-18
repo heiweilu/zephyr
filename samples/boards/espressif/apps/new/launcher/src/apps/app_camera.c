@@ -42,8 +42,8 @@ static void on_destroy(void) {}
 
 const app_info_t app_camera = {
 	.name = "Camera",
-	.icon_color = LV_COLOR_MAKE(0xE8, 0x5D, 0x04),
-	.icon_symbol = LV_SYMBOL_IMAGE,
+	.icon_color = LV_COLOR_MAKE(0xF9, 0x73, 0x16),
+	.icon_symbol = LV_SYMBOL_VIDEO,
 	.on_create = on_create,
 	.on_destroy = on_destroy,
 };

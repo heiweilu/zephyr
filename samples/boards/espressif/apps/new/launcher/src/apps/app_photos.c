@@ -42,8 +42,8 @@ static void on_destroy(void) {}
 
 const app_info_t app_photos = {
 	.name = "Photos",
-	.icon_color = LV_COLOR_MAKE(0x2E, 0xCC, 0x71),
-	.icon_symbol = LV_SYMBOL_DIRECTORY,
+	.icon_color = LV_COLOR_MAKE(0x10, 0xB9, 0x81),
+	.icon_symbol = LV_SYMBOL_IMAGE,
 	.on_create = on_create,
 	.on_destroy = on_destroy,
 };
