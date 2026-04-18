@@ -1,44 +1,67 @@
 /*
- * app_nes.c — NES Emulator placeholder
+ * app_nes.c — NES Emulator launcher entry
+ *
+ * Tapping the NES icon shows a 1-second "Starting NES..." splash, then
+ * calls nofrendo_main() which TAKES OVER the display and NEVER returns.
+ * Returning to HOME requires a hardware reset.
  */
 
 #include <lvgl.h>
+#include <zephyr/kernel.h>
 #include "../app_manager.h"
 
-static void back_cb(lv_event_t *e)
+extern const lv_font_t lv_font_source_han_sans_sc_16_cjk;
+
+/* nofrendo entry point (samples/.../nes_emulator/components/nofrendo) */
+extern int nofrendo_main(int argc, char **argv);
+
+static lv_timer_t *s_launch_timer;
+
+static void launch_nofrendo_cb(lv_timer_t *t)
 {
-	app_manager_back_to_home();
+	lv_timer_delete(t);
+	s_launch_timer = NULL;
+
+	printk("[NES] launch_nofrendo_cb fired, calling nofrendo_main()\n");
+	int rc = nofrendo_main(0, NULL);
+	printk("[NES] nofrendo_main RETURNED rc=%d (unexpected!)\n", rc);
 }
 
 static void on_create(lv_obj_t *screen)
 {
+	printk("[NES] on_create called\n");
+	lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
+
 	lv_obj_t *title = lv_label_create(screen);
 	lv_label_set_text(title, "NES Emulator");
 	lv_obj_set_style_text_color(title, lv_color_white(), 0);
 	lv_obj_set_style_text_font(title, &lv_font_source_han_sans_sc_16_cjk, 0);
-	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+	lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
 
 	lv_obj_t *desc = lv_label_create(screen);
-	lv_label_set_text(desc, "nofrendo + BLE Input\n(Phase 4)");
-	lv_obj_set_style_text_color(desc, lv_color_hex(0x888888), 0);
+	lv_label_set_text(desc, "Starting nofrendo...\nROM: sbp.nes\nReset to exit");
+	lv_obj_set_style_text_color(desc, lv_color_hex(0xFFCC00), 0);
 	lv_obj_set_style_text_font(desc, &lv_font_source_han_sans_sc_16_cjk, 0);
-	lv_obj_align(desc, LV_ALIGN_CENTER, 0, -10);
+	lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_align(desc, LV_ALIGN_CENTER, 0, 0);
 
-	lv_obj_t *btn = lv_button_create(screen);
-	lv_obj_set_size(btn, 120, 40);
-	lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -30);
-	lv_obj_add_event_cb(btn, back_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *lbl = lv_label_create(btn);
-	lv_label_set_text(lbl, "< Back");
-	lv_obj_center(lbl);
-
-	lv_group_t *g = app_manager_get_kb_group();
-	if (g) {
-		lv_group_add_obj(g, btn);
-	}
+	/* Give LVGL one full frame to render the splash, then launch.
+	 * 200ms is plenty for the user to see the message before nofrendo
+	 * blocks the LVGL thread permanently. */
+	s_launch_timer = lv_timer_create(launch_nofrendo_cb, 200, NULL);
+	lv_timer_set_repeat_count(s_launch_timer, 1);
 }
 
-static void on_destroy(void) {}
+static void on_destroy(void)
+{
+	printk("[NES] on_destroy called (s_launch_timer=%p)\n", (void *)s_launch_timer);
+	/* on_destroy is unreachable once nofrendo_main has been entered, but
+	 * keep it correct for the (theoretical) Back-before-launch case. */
+	if (s_launch_timer) {
+		lv_timer_delete(s_launch_timer);
+		s_launch_timer = NULL;
+	}
+}
 
 const app_info_t app_nes = {
 	.name = "NES",

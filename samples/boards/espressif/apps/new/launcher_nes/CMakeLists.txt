@@ -1,4 +1,14 @@
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.27)
+
+# Force ninja to use response files for compile/link commands.
+# Windows cmd.exe wraps long ninja commands ("cd /D ... && ...") and
+# ccache+gcc lose track of -c source.c when the wrapped command exceeds
+# ~8K characters. Response files (gcc @file syntax) keep cmd lines short.
+set(CMAKE_NINJA_FORCE_RESPONSE_FILE 1 CACHE INTERNAL "")
+if(POLICY CMP0151)
+    cmake_policy(SET CMP0151 NEW)
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(launcher_nes)
 
@@ -100,6 +110,7 @@ configure_file(
 target_sources(app PRIVATE
     src/nes/osd.c
     src/nes/compat.c
+    src/nes/log_wrap.c
     ${CMAKE_CURRENT_BINARY_DIR}/rom.S
     ${NOFRENDO_SRCS})
 
@@ -109,12 +120,22 @@ target_include_directories(app BEFORE PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src)
 target_include_directories(app PRIVATE ${NOFRENDO_INCS})
 
-# Suppress all warnings for legacy nofrendo source
+# Suppress all warnings for legacy nofrendo source.
+# Note: log_init/log_shutdown are renamed to nf_log_init/nf_log_shutdown via
+# our shadow src/nes/log.h (BEFORE-PRIVATE include path wins) — this avoids
+# clashing with Zephyr's `void log_init(void)` symbol from CONFIG_LOG=y.
 foreach(src ${NOFRENDO_SRCS})
     set_source_files_properties(${src} PROPERTIES COMPILE_FLAGS "-w")
 endforeach()
 
 target_compile_definitions(app PRIVATE HOST_LITTLE_ENDIAN=1)
+
+# nofrendo's log_init/log_shutdown clash with Zephyr subsys/logging's
+# `void log_init(void)` symbol. We use ld --wrap to redirect nofrendo's
+# undefined references at link time to our __wrap_* stubs in log_wrap.c.
+# This avoids per-file -D macros (Windows 32K cmdline limit) and avoids
+# touching upstream nofrendo source.
+zephyr_link_libraries("-Wl,--wrap=log_init" "-Wl,--wrap=log_shutdown")
 
 set_source_files_properties(
     ${CMAKE_CURRENT_LIST_DIR}/src/nes/osd.c

@@ -45,11 +45,81 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/i2s.h>
+#include <zephyr/init.h>
+#include <zephyr/sys/sys_heap.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <errno.h>
 #include "../ble_hid.h"
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/*  PSRAM heap for nofrendo                                                    */
+/*    nofrendo's bmp_create() needs ~60 KB for the 256x240 GUI framebuffer    */
+/*    which exceeds CONFIG_HEAP_MEM_POOL_SIZE (16 KB) and we have no DRAM     */
+/*    headroom (94.7% used). Provide a 256 KB sys_heap in PSRAM and make     */
+/*    nofrendo's malloc/free/strdup (via shadow memguard.h) target it.        */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+#define NES_PSRAM_HEAP_SIZE (256 * 1024)
+static char nes_psram_pool[NES_PSRAM_HEAP_SIZE]
+	__attribute__((section(".ext_ram.bss"))) __aligned(8);
+static struct sys_heap nes_psram_heap;
+
+static int nes_psram_heap_init(void)
+{
+	sys_heap_init(&nes_psram_heap, nes_psram_pool, NES_PSRAM_HEAP_SIZE);
+	return 0;
+}
+SYS_INIT(nes_psram_heap_init, APPLICATION, 90);
+
+void *nes_malloc(size_t size)
+{
+	return sys_heap_alloc(&nes_psram_heap, size);
+}
+
+void nes_free(void *p)
+{
+	if (p) sys_heap_free(&nes_psram_heap, p);
+}
+
+char *nes_strdup(const char *s)
+{
+	if (!s) return NULL;
+	size_t n = strlen(s) + 1;
+	char *r = sys_heap_alloc(&nes_psram_heap, n);
+	if (r) memcpy(r, s, n);
+	return r;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/*  nofrendo log API stubs                                                     */
+/*    nofrendo's log.c is excluded from build (its log_init() collides with    */
+/*    Zephyr's CONFIG_LOG=y log_init). nofrendo doesn't actually call its own  */
+/*    log_init/log_shutdown anywhere, so we don't override Zephyr's version.   */
+/*    We only need log_print/log_printf/log_chain_logfunc/log_assert.          */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+int log_print(const char *s)     { printk("%s", s); return 0; }
+int log_printf(const char *fmt, ...)
+{
+	char buf[160];
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	printk("%s", buf);
+	return n;
+}
+void log_chain_logfunc(int (*fn)(const char *)) { ARG_UNUSED(fn); }
+void log_assert(int expr, int line, const char *file, char *msg)
+{
+	if (!expr) {
+		printk("nofrendo ASSERT %s:%d %s\n", file, line,
+		       msg ? msg : "");
+	}
+}
+
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Constants                                                                  */
@@ -109,7 +179,10 @@
  * called it `pa_gpio` — keep both names compiling on each variant. */
 #define PA_NODE       DT_NODELABEL(pa_enable)
 
-K_MEM_SLAB_DEFINE_STATIC(audio_tx_slab, AUDIO_BLOCK_SIZE, AUDIO_BLOCK_COUNT, 4);
+/* Audio TX slab buffer placed in PSRAM (~14 KB) to spare DRAM. */
+K_MEM_SLAB_DEFINE_IN_SECT_STATIC(audio_tx_slab,
+	Z_GENERIC_SECTION(.ext_ram.bss),
+	AUDIO_BLOCK_SIZE, AUDIO_BLOCK_COUNT, 4);
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Private state                                                              */

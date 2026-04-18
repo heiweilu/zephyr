@@ -36,14 +36,6 @@ extern const app_info_t app_music;
 extern const app_info_t app_face;
 extern const app_info_t app_imu;
 
-/* ── nofrendo forced reference ──────────────────────────
- * Step 2: nofrendo sources are compiled in but NEVER called.
- * This volatile pointer assignment forces the linker to keep
- * nofrendo_main() (and its transitive deps via osd.c) so we can
- * verify build/link/footprint before wiring it to the NES icon.
- */
-extern int nofrendo_main(int argc, char **argv);
-volatile void *_nofrendo_keep = (void *)&nofrendo_main;
 
 /* ── LVGL Mouse input read callback ──────────────────── */
 
