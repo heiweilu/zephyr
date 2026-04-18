@@ -31,9 +31,9 @@ LOG_MODULE_REGISTER(ai_client, LOG_LEVEL_INF);
 #define CA_TAG        1
 
 /* PSRAM-backed scratch buffers (avoid blowing up DRAM). */
-#define REQ_CAP       (12 * 1024)   /* HTTP headers + JSON + base64 jpeg */
+#define REQ_CAP       (24 * 1024)   /* HTTP headers + JSON + base64 jpeg */
 #define RESP_CAP      (4 * 1024)    /* full HTTP response */
-#define B64_CAP       (8 * 1024)    /* base64-encoded jpeg, ~4/3 of jpeg_len */
+#define B64_CAP       (16 * 1024)   /* base64-encoded jpeg, ~4/3 of jpeg_len */
 
 static uint8_t req_buf[REQ_CAP]   __attribute__((section(".ext_ram.bss")));
 static uint8_t resp_buf[RESP_CAP] __attribute__((section(".ext_ram.bss")));
@@ -80,14 +80,14 @@ static int b64_encode(const uint8_t *in, size_t in_len, char *out, size_t out_ca
 int ai_client_init(void)
 {
 	int ret = tls_credential_add(CA_TAG, TLS_CREDENTIAL_CA_CERTIFICATE,
-				     ca_cert_digicert_g2,
-				     sizeof(ca_cert_digicert_g2));
+				     ca_cert_globalsign_r3,
+				     sizeof(ca_cert_globalsign_r3));
 	if (ret < 0 && ret != -EEXIST) {
 		LOG_ERR("tls_credential_add failed: %d", ret);
 		return ret;
 	}
 	LOG_INF("CA cert registered (tag=%d, %u bytes)",
-		CA_TAG, (unsigned)sizeof(ca_cert_digicert_g2));
+		CA_TAG, (unsigned)sizeof(ca_cert_globalsign_r3));
 	return 0;
 }
 
@@ -129,7 +129,7 @@ static int connect_tls(void)
 		return -errno;
 	}
 
-	int verify = TLS_PEER_VERIFY_NONE;
+	int verify = TLS_PEER_VERIFY_REQUIRED;
 	if (zsock_setsockopt(sock, SOL_TLS, TLS_PEER_VERIFY,
 			     &verify, sizeof(verify)) < 0) {
 		LOG_WRN("TLS_PEER_VERIFY failed: %d", -errno);
