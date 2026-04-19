@@ -5,7 +5,7 @@
 **一张手掌大的 ESP32-S3 开发板，三套固件，一个完整的"口袋桌面 OS"。**
 
 基于 [Zephyr RTOS 4.2](https://www.zephyrproject.org/) + LVGL 9.x + ESP-IDF HAL，
-用 **CHD-ESP32-S3-BOX** 这块国产开源硬件，从零做出一个能打电话(误)、能玩 NES、能跑大模型视觉问答的"掌上小电脑"。
+用 **ESP32-S3-BOX** 用这块开发板，从零做出一个能AI语音沟通、能玩 NES、能跑大模型视觉问答的"掌上小电脑"。
 
 ![Zephyr](https://img.shields.io/badge/Zephyr-v4.2-7c5295?style=for-the-badge&logo=zephyrproject&logoColor=white)
 ![ESP32-S3](https://img.shields.io/badge/ESP32--S3-PSRAM%208MB-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
@@ -27,7 +27,9 @@
 
 ## 💡 这是什么？
 
-`Zephyr-Card` 是我用 **CHD-ESP32-S3-BOX** 开发板做的一个个人项目 —— 一张比扑克牌还小的开发板，上面塞下了：
+![alt text](image.png)
+
+`Zephyr-Card` 是我用 **ESP32-S3-BOX** 开发板做的一个个人项目 —— 一张扑克牌大小的开发板，上面塞下了：
 
 - 320×240 ST7789V LCD（电容触摸只是装饰，目前用 BLE-HID 鼠标驱动）
 - ES8311 DAC（喇叭）+ ES7210 ADC（4 麦阵列）
@@ -35,9 +37,6 @@
 - ICM-42607-C 6 轴 IMU
 - BLE 5.0 + Wi-Fi 双模
 - 8 MB PSRAM + 16 MB Flash + SD 卡槽
-
-目标是把它当做一个真正"能用"的玩具：**桌面要顺、要有 App、要能玩游戏、要能跟 AI 聊天、要能拍照识物**。
-最终交付的不是一个 demo，而是 **3 个可以直接 `west flash` 的完整固件**。
 
 ---
 
@@ -61,28 +60,28 @@
 ```mermaid
 flowchart TB
     subgraph HW["🔧 CHD-ESP32-S3-BOX 硬件"]
-        LCD[ST7789V<br/>320×240]
-        CAM[OV2640/OV3660]
-        DAC[ES8311 DAC]
-        ADC[ES7210 4-Mic]
-        BLE[BLE 5.0]
-        WIFI[Wi-Fi]
-        PSRAM[8MB PSRAM]
-        IMU[ICM-42607]
+        LCD["ST7789V<br/>320×240"]
+        CAM["OV2640/OV3660"]
+        DAC["ES8311 DAC"]
+        ADC["ES7210 4-Mic"]
+        BLE["BLE 5.0"]
+        WIFI["Wi-Fi"]
+        PSRAM["8MB PSRAM"]
+        IMU["ICM-42607"]
     end
 
     subgraph ZEPHYR["🌬️ Zephyr 4.2 内核"]
-        DRV[device drivers<br/>I2S / SPI / I2C / video]
-        NET[net + mbedTLS]
-        BTSTACK[BT Host/Controller]
+        DRV["device drivers<br/>I2S / SPI / I2C / video"]
+        NET["net + mbedTLS"]
+        BTSTACK["BT Host/Controller"]
     end
 
     subgraph APP["🎨 应用层"]
-        LV[LVGL 9.x<br/>UI 框架]
-        APPMGR[app_manager<br/>桌面 + 路由]
-        AI[ai_service<br/>DashScope ASR/LLM/TTS]
-        NES[nofrendo<br/>NES 模拟器]
-        VISION[ai_vision<br/>Qwen-VL 多模态]
+        LV["LVGL 9.x<br/>UI 框架"]
+        APPMGR["app_manager<br/>桌面 + 路由"]
+        AI["ai_service<br/>DashScope ASR/LLM/TTS"]
+        NES["nofrendo<br/>NES 模拟器"]
+        VISION["ai_vision<br/>Qwen-VL 多模态"]
     end
 
     HW --> ZEPHYR --> APP
@@ -135,43 +134,79 @@ west flash --build-dir build_launcher_nes
 
 `launcher` / `launcher_full` 用阿里云 [DashScope](https://dashscope.console.aliyun.com/) 接 Qwen 系列模型。**所有 `secrets.h` 已在 `.gitignore` 里禁止入库**，需要按下面 [🧠 AI 链路 & API 配置](#-ai-链路--api-配置) 一节自己创建并填入。
 
-> ⚠️ **绝不要把 `secrets.h` 提交到公开仓库**！本项目历史曾意外提交过 key，已作废 + 清理；
+> ⚠️ **绝不要把 `secrets.h` 提交到公开仓库**！
 > 请你 fork 后第一件事就是确认你的 `.gitignore` 生效，并用全新 key。
 
 ---
 
 ## 🧠 AI 链路 & API 配置
 
-本项目所有 AI 能力**全部走阿里云 DashScope**（百炼平台），共两条独立链路：
+本项目所有 AI 能力**全部走阿里云 DashScope**（百炼平台），共两条独立链路。
+
+### 🎓 前置科普：ASR / LLM / TTS 是什么？
+
+任何语音助手（Siri / 小爱 / Alexa / 我们的 AI Assistant）背后都是**三件套**：
+
+```
+🎤 你说话 → [ASR 听] → [LLM 想] → [TTS 说] → 🔊 喇叭
+```
+
+| 缩写 | 全称 | 中文 | 担任职责 | 类比 |
+|---|---|---|---|---|
+| **ASR** | Automatic Speech Recognition | 自动语音识别 | 把**音频** → **文字** | 接线员的**耳朵** |
+| **LLM** | Large Language Model | 大语言模型 | 把**问题文字** → **答案文字** | 接线员的**脑子** |
+| **TTS** | Text-To-Speech | 语音合成 | 把**答案文字** → **音频** | 接线员的**嘴巴** |
+
+少了任何一个，对话就没法闭环。
+
+历史上这三步通常**由不同厂商擅长**（Google ASR / OpenAI LLM / Azure TTS），所以"分开拼装"是
+经典做法。Realtime "一站式"模型（如 `qwen3.5-omni-flash-realtime`）把三步塞进一个 WebSocket，
+理论延迟 ≤1s 可打断对话，但代价是**贵 / 脆弱 / 不可换** —— 见下面 [设计决策 #2](#决策-2语音链路从-realtime-omni-切到-plan-a-三步)。
 
 ### 链路 A — `launcher` 的「AI Assistant」语音助手
 
 ```
-🎤 ES7210 录音 (16kHz mono)
+🎤 ES7210 录音 (16kHz mono, 最长 10s)
         ↓
    WAV 封装 + base64
         ↓
-┌────────── Plan 优先级 ──────────┐
-│ Plan-1 (主)：Realtime WebSocket │  qwen3.5-omni-flash-realtime
-│   wss://dashscope.aliyuncs.com  │  全双工流式 ASR+LLM+TTS
-│   /api-ws/v1/realtime           │  端到端 ~3-5s
-│                                 │
-│ Plan-2 (备)：分步 SSE           │  qwen3-asr-flash → qwen-turbo
-│   POST /api/v1/services/aigc/   │  → qwen3-tts-flash
-│   .../generation                │  端到端 ~8s
-└─────────────────────────────────┘
+┌──────────── 当前激活：Plan-A 三步链路 ────────────┐
+│ Step 1：ASR                                      │
+│   POST  /api/v1/services/aigc/                  │
+│         multimodal-generation/generation         │
+│   model = qwen3-asr-flash                        │
+│                                                  │
+│ Step 2：LLM                                      │
+│   POST  /compatible-mode/v1/chat/completions    │
+│   model = qwen-turbo  (SSE 流式)                 │
+│                                                  │
+│ Step 3：TTS                                      │
+│   WebSocket /api-ws/v1/realtime                  │
+│   model = qwen3-tts-flash-realtime               │
+│   voice = Cherry                                 │
+│   返回 base64 PCM 24kHz → 重采样 16kHz → 播放    │
+└──────────────────────────────────────────────────┘
         ↓
-   PCM 流回放 → ES8311 喇叭
+   PCM 流回放 → ES8311 喇叭（端到端 ~8s）
+
+┌──────────── 备用（代码保留，flag 关闭）─────────┐
+│ qwen3.5-omni-flash-realtime  全双工 ASR+LLM+TTS │
+│ 在 ai_service.c 把 AI_USE_REALTIME 改回 1 即启用 │
+│ 端到端 ~3-5s，但稳定性与并发额度差于分步链路    │
+└──────────────────────────────────────────────────┘
 ```
 
-**用到的模型**：
+**当前实际用到的模型**：
 
-| 模型 | 用途 | DashScope 模型 ID |
-|---|---|---|
-| Realtime Omni | ASR + LLM + TTS 一站式（首选） | `qwen3.5-omni-flash-realtime` |
-| ASR | 语音识别（fallback） | `qwen3-asr-flash` |
-| LLM | 对话理解（fallback） | `qwen-turbo` |
-| TTS | 语音合成（fallback） | `qwen3-tts-flash` |
+| 阶段 | 模型 | DashScope 模型 ID | 协议 |
+|---|---|---|---|
+| ASR | 一句话识别 | `qwen3-asr-flash` | HTTPS POST |
+| LLM | 对话生成 | `qwen-turbo` | HTTPS SSE |
+| TTS | 语音合成 | `qwen3-tts-flash-realtime` | WebSocket（音色 Cherry） |
+| *(备用)* | Realtime 全双工 | `qwen3.5-omni-flash-realtime` | WebSocket（默认禁用） |
+
+> 📍 想切换链路？编辑 [`launcher/src/ai_service.c`](samples/boards/espressif/apps/new/launcher/src/ai_service.c) 顶部 4 个宏：
+> `AI_DEBUG_PIPELINE_ASR` / `AI_DEBUG_PIPELINE_LLM` / `AI_USE_QWEN_TTS` / `AI_USE_REALTIME`。
 
 ### 链路 B — `launcher_full` 的「AI Vision」视觉问答
 
@@ -237,16 +272,6 @@ git check-ignore -v samples\boards\espressif\apps\new\launcher\src\secrets.h
 # 应输出 .gitignore 行号
 ```
 
-### 📊 计费提示
-
-| 场景 | 单次成本（约） | 备注 |
-|---|---|---|
-| qwen3.5-omni-flash-realtime | ¥0.005-0.02 | 按音频时长计费 |
-| qwen-vl-plus（带图） | ¥0.008-0.02 | 按 token 计费 |
-| cosyvoice-v2 TTS | ¥0.001-0.005 / 句 | 按字数计费 |
-
-> 个人开发学习场景一天玩几十次 < ¥1，**新用户大多有几十万 token 免费额度**，不必有压力。
-
 ### 🔐 安全最佳实践
 
 - ✅ 用 **API-KEY** 而非 RAM 子用户长期 AK / SK（DashScope 推荐）
@@ -255,6 +280,140 @@ git check-ignore -v samples\boards\espressif\apps\new\launcher\src\secrets.h
 - ✅ key 一旦怀疑泄漏，立刻在控制台**作废重建**
 - ❌ 不要把 key 写进 README / 截图 / 视频里
 - ❌ 不要 push `secrets.h`（本项目 `.gitignore` 已自动屏蔽）
+
+---
+## 🧩 设计决策
+
+### 决策 1：为什么是"三个固件"而不是一个？
+见上方 [⚙️ 为什么是"三个"固件而不是一个？](#️-为什么是三个固件而不是一个)。
+
+### 决策 2：语音链路从 Realtime Omni 切到 Plan-A 三步
+
+最初代码用的是 `qwen3.5-omni-flash-realtime` —— 一个 WebSocket 全双工模型，**理论端到端延迟 ≤1s 可打断对话**。
+但实测后发现 ESP32-S3 跑不动它的"流式播放"，于是从一个模型拆成了三步链路。
+
+**完整决策路径**（按 `ai_service.c` commit 时间）：
+
+```
+fix(tls):     修 TLS 1.2 握手（RSA-PSS / PSA PRF）
+fix(audio):   把 Realtime 流式播放改"累积后一次性播"  ← 关键转折点
+feat(asr):    加 qwen3-asr-flash 单步探针
+feat(llm):    加 qwen-turbo 单步探针
+refactor:     TTS 回退到 collect-all-then-play
+feat(tts):    集成 qwen3-tts-flash-realtime + TLS/TCP 调优
+perf:         WiFi/TCP buffer 调优，端到端 ≤8s
+```
+
+**5 个核心原因**：
+
+#### 1️⃣ 流式播放在 ESP32-S3 上不稳定（直接动因）
+Realtime 全双工要求边录边传边收边播，但 ESP32-S3 上：
+- 网络抖动 → 收音频包不连续 → I2S 喇叭"咔哒咔哒"
+- 同时跑 BLE Host + LVGL + Wi-Fi → audio task 抢不到 CPU
+- 修复方式是改成"累积完再一次性播"，**这等于已经放弃了 Realtime 的核心优势（低延迟）**
+
+一旦放弃流式，Realtime 只剩"单 WebSocket"这一个微弱理由，性价比骤降。
+
+#### 2️⃣ 调试与归因困难
+Realtime 是黑盒：用户说话 → 喇叭出错答案。**到底 ASR 听错？LLM 答错？TTS 念错？**
+
+拆三步后每一步都能在串口日志里看到中间产物，**精确归因，迭代速度提升 5-10 倍**。
+
+#### 3️⃣ 模型可独立挑选
+分步后可以：
+- ASR 选 `qwen3-asr-flash`（速度最快）
+- LLM 选 `qwen-turbo`（性价比最高），日后想升级换 `qwen-plus` / `qwen-max`
+- TTS 选 `qwen3-tts-flash-realtime` + `Cherry` 音色（**比 Omni 内置音色更自然**）
+
+#### 4️⃣ 失败可单步重试
+- Realtime WebSocket 断 → 整局会话作废 → 重连 → 重新初始化
+- 三步 HTTPS 短连接 → 任何一步失败可单独重试
+
+#### 5️⃣ 计费更可控
+- Realtime 按音频时长计费（说得越久越贵）
+- 分步按 token 计费，更精细，单次成本透明
+
+**对比小结**：
+
+| 维度 | Realtime Omni | Plan-A 三步 |
+|---|---|---|
+| 端到端延迟 | 3-5s 理论 / 6-8s 实际带卡顿 | 8s 稳定无卡顿 |
+| 调试性 | ❌ 黑盒 | ✅ 三步独立日志 |
+| 模型可换 | ❌ 锁定 | ✅ 任意拼装 |
+| 失败重试 | ❌ 整局重来 | ✅ 单步重试 |
+| 音色自然度 | 一般 | ✅ Cherry 更好 |
+| 内存占用 | 高（持续 WS buffer） | ✅ 短连接，可释放 |
+| 代码复杂度 | 高（状态机 + 流式 buffer） | ✅ 三个独立函数 |
+
+**结论**：8 秒延迟对一个语音玩具完全可接受，工程上选稳定的三步链路。
+Realtime 路径在 [`ai_service.c`](samples/boards/espressif/apps/new/launcher/src/ai_service.c) 第 81 行 `AI_USE_REALTIME=0` 关闭，未来想试一行宏切回。
+
+---
+## 🧩 设计决策
+
+### 决策 1：为什么是"三个固件"而不是一个？
+见上方 [⚙️ 为什么是"三个"固件而不是一个？](#️-为什么是三个固件而不是一个)。
+
+### 决策 2：语音链路从 Realtime Omni 切到 Plan-A 三步
+
+最初代码用的是 `qwen3.5-omni-flash-realtime` —— 一个 WebSocket 全双工模型，**理论端到端延迟 ≤1s 可打断对话**。
+但实测后发现 ESP32-S3 跑不动它的"流式播放"，于是从一个模型拆成了三步链路。
+
+**完整决策路径**（按 `ai_service.c` commit 时间）：
+
+```
+fix(tls):     修 TLS 1.2 握手（RSA-PSS / PSA PRF）
+fix(audio):   把 Realtime 流式播放改"累积后一次性播"  ← 关键转折点
+feat(asr):    加 qwen3-asr-flash 单步探针
+feat(llm):    加 qwen-turbo 单步探针
+refactor:     TTS 回退到 collect-all-then-play
+feat(tts):    集成 qwen3-tts-flash-realtime + TLS/TCP 调优
+perf:         WiFi/TCP buffer 调优，端到端 ≤8s
+```
+
+**5 个核心原因**：
+
+#### 1️⃣ 流式播放在 ESP32-S3 上不稳定（直接动因）
+Realtime 全双工要求边录边传边收边播，但 ESP32-S3 上：
+- 网络抖动 → 收音频包不连续 → I2S 喇叭"咔哒咔哒"
+- 同时跑 BLE Host + LVGL + Wi-Fi → audio task 抢不到 CPU
+- 修复方式是改成"累积完再一次性播"，**这等于已经放弃了 Realtime 的核心优势（低延迟）**
+
+一旦放弃流式，Realtime 只剩"单 WebSocket"这一个微弱理由，性价比骤降。
+
+#### 2️⃣ 调试与归因困难
+Realtime 是黑盒：用户说话 → 喇叭出错答案。**到底 ASR 听错？LLM 答错？TTS 念错？**
+
+拆三步后每一步都能在串口日志里看到中间产物，**精确归因，迭代速度提升 5-10 倍**。
+
+#### 3️⃣ 模型可独立挑选
+分步后可以：
+- ASR 选 `qwen3-asr-flash`（速度最快）
+- LLM 选 `qwen-turbo`（性价比最高），日后想升级换 `qwen-plus` / `qwen-max`
+- TTS 选 `qwen3-tts-flash-realtime` + `Cherry` 音色（**比 Omni 内置音色更自然**）
+
+#### 4️⃣ 失败可单步重试
+- Realtime WebSocket 断 → 整局会话作废 → 重连 → 重新初始化
+- 三步 HTTPS 短连接 → 任何一步失败可单独重试
+
+#### 5️⃣ 计费更可控
+- Realtime 按音频时长计费（说得越久越贵）
+- 分步按 token 计费，更精细，单次成本透明
+
+**对比小结**：
+
+| 维度 | Realtime Omni | Plan-A 三步 |
+|---|---|---|
+| 端到端延迟 | 3-5s 理论 / 6-8s 实际带卡顿 | 8s 稳定无卡顿 |
+| 调试性 | ❌ 黑盒 | ✅ 三步独立日志 |
+| 模型可换 | ❌ 锁定 | ✅ 任意拼装 |
+| 失败重试 | ❌ 整局重来 | ✅ 单步重试 |
+| 音色自然度 | 一般 | ✅ Cherry 更好 |
+| 内存占用 | 高（持续 WS buffer） | ✅ 短连接，可释放 |
+| 代码复杂度 | 高（状态机 + 流式 buffer） | ✅ 三个独立函数 |
+
+**结论**：8 秒延迟对一个语音玩具完全可接受，工程上选稳定的三步链路。
+Realtime 路径在 [`ai_service.c`](samples/boards/espressif/apps/new/launcher/src/ai_service.c) 第 81 行 `AI_USE_REALTIME=0` 关闭，未来想试一行宏切回。
 
 ---
 
@@ -367,13 +526,10 @@ west flash --build-dir build_launcher_nes
 
 ## 📖 使用指南（每个 App 怎么玩）
 
-> 📷 截图位置：所有截图统一放 `docs/img/<app_name>.png`，README 里全是占位符 — **由作者后续补充**。
-
 ### 🤖 AI 助手（语音对话）
 
 > 固件：`launcher` · 入口：桌面 → 「AI Assistant」(靛蓝色圆球图标)
 >
-> ![AI Assistant 截图](docs/img/ai_assistant.png) *(占位 — 待补充)*
 
 **前置条件**：
 - 已配 Wi-Fi（在 `samples/.../launcher/src/secrets.h` 里填 SSID / 密码）
@@ -406,7 +562,8 @@ west flash --build-dir build_launcher_nes
 
 > 固件：`launcher` · 入口：桌面 → 「Music」(紫色播放图标)
 >
-> ![Music 截图](docs/img/music.png) *(占位 — 待补充)*
+
+![alt text](image-1.png)
 
 **默认行为**：内嵌一段 30 秒的 16 kHz / 16-bit / 单声道 PCM 片段（`src/apps/song1_30s.pcm`）。
 
@@ -481,7 +638,8 @@ west flash --build-dir build_launcher
 
 > 固件：**`launcher_full`**（**不是** `launcher`！launcher 里 Camera 是占位）
 >
-> ![AI Vision 截图](docs/img/ai_vision.png) *(占位 — 待补充)*
+
+![alt text](image-2.png)
 
 **为什么是单独固件**：见上方 [冲突 1](#️-为什么是三个固件而不是一个) — BT 与 LCD-CAM 不能共存。
 
@@ -519,7 +677,8 @@ west flash --build-dir build_launcher
 
 > 固件：`launcher` · 入口：桌面 → 「IMU」(橙色三轴图标)
 >
-> ![IMU 截图](docs/img/imu.png) *(占位 — 待补充)*
+
+![alt text](image-3.png)
 
 **功能**：实时显示 ICM-42607-C 的 3 轴加速度计 + 3 轴陀螺仪数据，支持：
 - **数值面板**（左侧）：6 个浮点数实时刷新（10 Hz）
@@ -535,7 +694,8 @@ west flash --build-dir build_launcher
 
 > 固件：`launcher` · 入口：桌面 → 「Terminal」(绿色提示符图标)
 >
-> ![Terminal 截图](docs/img/terminal.png) *(占位 — 待补充)*
+
+![alt text](image-4.png)
 
 **输入方式**：**必须用 BLE 蓝牙键盘**（屏幕没有触摸 + 软键盘）。
 
@@ -560,7 +720,7 @@ west flash --build-dir build_launcher
 
 ### 🔊 语音/音频系统总览
 
-整个项目里"语音"涉及 3 条独立流水线，**别搞混**：
+整个项目里"语音"涉及 3 条独立流水线
 
 | 流水线 | 固件 | 输入 | 输出 | 用途 |
 |---|---|---|---|---|
@@ -608,7 +768,7 @@ nofrendo（1998 年 SourceForge 老古董）在多次 init/shutdown 后会破坏
 
 ## 🕳️ 踩坑实录（18 个让我掉头发的 Bug）
 
-按 git 提交时间顺序，挑了影响最深的 18 条。每条都是真金白银的 **半天到两天调试时间**。
+按 git 提交时间顺序，挑了影响最深的 18 条。
 
 | # | 模块 | 症状 | 根因 | 修复 |
 |---|---|---|---|---|
@@ -633,38 +793,11 @@ nofrendo（1998 年 SourceForge 老古董）在多次 init/shutdown 后会破坏
 
 ---
 
-## 📜 提交时间线（精选）
-
-```
-2025-XX  feat(launcher_nes): Step 3b — ESC 退出 NES + sys_reboot 兜底
-2025-XX  fix(launcher_nes/audio): I2S TX 缓冲从 PSRAM 迁回 DRAM，消除爆音
-2025-XX  feat(launcher_nes): Step 3a — 接通 nofrendo_main + 内嵌 sbp.nes
-2025-XX  feat(launcher_nes): 编入 nofrendo NES 模拟器（链接验证阶段）
-2025-XX  feat(launcher_full): Phase 2d — app_camera 单向预览
-2025-XX  feat(launcher_full): Phase 2c — BOOT 键导航
-2025-XX  feat(launcher_full): Phase 2b — 4×2 图标网格 HOME
-2025-XX  feat(launcher_full): Phase 2a — 基于 face_recognize 搭骨架
-2025-XX  feat(launcher): AI Assistant 端到端打通（DashScope）
-2025-XX  feat(launcher): BLE-HID 鼠标光标接入 LVGL
-2025-XX  feat(launcher): app_manager 框架 + 8 个 app 注册
-2025-XX  feat(launcher): Phase 1 框架完成 — Launcher 桌面系统
-```
-
-完整 commit 历史：`git log --oneline samples/boards/espressif/apps/new/`
-
----
-
 ## 🎬 视频演示
 
-📺 **B 站**：[搜索 Zephyr-Card] *(待发布)*  
-📱 **抖音**：[搜索 Zephyr-Card] *(待发布)*  
-🎥 GIF 预览：
+📺 **B 站**：[https://www.bilibili.com/video/BV1duoFBvExu/?spm_id_from=333.1387.homepage.video_card.click&vd_source=6122606cd865d1b2229b91346f6e741e] 
+📱 **抖音**：[https://www.douyin.com/user/self?from_tab_name=main&modal_id=7630462104822222132]
 
-| launcher | launcher_full | launcher_nes |
-|:---:|:---:|:---:|
-| ![home](docs/img/home.gif) | ![ai](docs/img/aivision.gif) | ![nes](docs/img/nes.gif) |
-
-> *(GIF 占位，等视频剪完替换)*
 
 ---
 
@@ -682,10 +815,10 @@ zephyr/
 
 ---
 
-## 🤝 致谢
+## 🤝 
 
-- [Zephyr Project](https://www.zephyrproject.org/) —— 一个真正"能写得动"的 RTOS
-- [LVGL](https://lvgl.io/) —— 嵌入式 UI 天花板
+- [Zephyr Project](https://www.zephyrproject.org/) ——  RTOS
+- [LVGL](https://lvgl.io/) —— 嵌入式 UI
 - [nofrendo](https://github.com/nofrendo/nofrendo) —— 25 年的开源 NES 模拟器
 - [Espressif](https://www.espressif.com/) —— ESP32-S3 SoC 与 HAL
 - [阿里云 DashScope](https://dashscope.console.aliyun.com/) —— Qwen 系列模型 API
