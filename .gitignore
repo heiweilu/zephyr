@@ -8,6 +8,13 @@
 *.swo
 *~
 
+# Private publishing notes (Zephyr-Card project)
+samples/boards/espressif/apps/new/PUBLISH_GUIDE.md
+
+# Secrets — API keys / WiFi credentials NEVER commit
+**/secrets.h
+!**/secrets.h.example
+
 # Emacs
 \#*\#
 
