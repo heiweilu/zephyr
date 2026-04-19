@@ -195,6 +195,7 @@ static const struct device *s_display_dev;
 static const struct device *s_i2s_dev;
 static void (*volatile s_apu_process)(void *buffer, int num_samples);
 static volatile bool s_audio_ready;
+static bool s_i2s_started;
 static int16_t s_mono_buf[AUDIO_MONO_SAMPLES];
 
 /* k_work + k_timer: timer fires every AUDIO_BLOCK_MS, work handler generates
@@ -474,6 +475,17 @@ static int audio_hw_init(void)
 {
 	int ret;
 
+	/* If we are re-entering after a previous NES session, the I2S TX is
+	 * still in RUNNING state with our slab attached. Drop it cleanly so
+	 * i2s_configure() succeeds and pending blocks are returned to the
+	 * slab. Safe to call even if not yet configured (driver returns -EIO,
+	 * which we ignore). */
+	if (s_i2s_started && s_i2s_dev) {
+		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+	}
+	s_audio_ready = false;
+	s_i2s_started = false;
+
 	/* I2C — ES8311 codec init */
 	const struct device *i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 	if (!device_is_ready(i2c)) {
@@ -540,7 +552,6 @@ static int audio_hw_init(void)
 static void audio_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	static bool i2s_started;
 
 	if (!s_audio_ready || !s_apu_process) {
 		return;
@@ -568,16 +579,16 @@ static void audio_work_handler(struct k_work *work)
 			return;
 		}
 		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
-		i2s_started = true;
+		s_i2s_started = true;
 		return;
 	} else if (ret) {
 		k_mem_slab_free(&audio_tx_slab, block);
 		return;
 	}
 
-	if (!i2s_started) {
+	if (!s_i2s_started) {
 		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_START);
-		i2s_started = true;
+		s_i2s_started = true;
 	}
 }
 
@@ -661,6 +672,16 @@ int osd_init(void)
 void osd_shutdown(void)
 {
 	k_timer_stop(&s_nes_timer);
+
+	/* Stop audio cleanly so a future audio_hw_init() can re-configure I2S. */
+	k_timer_stop(&audio_timer);
+	s_audio_ready = false;
+	s_apu_process = NULL;
+	if (s_i2s_started && s_i2s_dev) {
+		i2s_trigger(s_i2s_dev, I2S_DIR_TX, I2S_TRIGGER_DROP);
+		s_i2s_started = false;
+	}
+
 	/* s_framebuf and s_indexed are static PSRAM arrays — no free needed */
 	if (s_bitmap) {
 		bmp_destroy(&s_bitmap);
@@ -676,7 +697,21 @@ int osd_main(int argc, char *argv[])
 {
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
-	return main_loop("osd:", system_nes);
+
+	int rc = main_loop("osd:", system_nes);
+	/* main_quit() destroyed the NES object & freed console.filename.
+	 * We still clean osd-layer (timers + I2S DROP) so the post-reboot
+	 * path is safe even if sys_reboot is removed in the future. The
+	 * caller (launch_nofrendo_cb) issues sys_reboot to recover from
+	 * heap corruption / leaks in nofrendo upstream that we do NOT
+	 * attempt to fix here. */
+	extern void vid_shutdown(void);
+	extern void gui_shutdown(void);
+	vid_shutdown();
+	gui_shutdown();
+	config.close();
+	osd_shutdown();
+	return rc;
 }
 
 void osd_fullname(char *fullname, const char *shortname)
@@ -719,8 +754,8 @@ static void handle_kb_event(struct kb_event *evt)
 		ev_idx = event_joypad1_start; break;
 	case ' ': /* Space */
 		ev_idx = event_joypad1_select; break;
-	case 27: /* LV_KEY_ESC */
-		ev_idx = event_hard_reset; break;
+	case 27: /* LV_KEY_ESC — quit emulator and return to launcher HOME */
+		ev_idx = event_quit; break;
 	}
 
 	if (ev_idx != -1) {

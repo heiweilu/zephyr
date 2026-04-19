@@ -8,6 +8,7 @@
 
 #include <lvgl.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/reboot.h>
 #include "../app_manager.h"
 
 extern const lv_font_t lv_font_source_han_sans_sc_16_cjk;
@@ -24,7 +25,14 @@ static void launch_nofrendo_cb(lv_timer_t *t)
 
 	printk("[NES] launch_nofrendo_cb fired, calling nofrendo_main()\n");
 	int rc = nofrendo_main(0, NULL);
-	printk("[NES] nofrendo_main RETURNED rc=%d (unexpected!)\n", rc);
+	printk("[NES] nofrendo_main RETURNED rc=%d, rebooting to recover clean state\n", rc);
+
+	/* nofrendo upstream leaks ~80 KB / session into the PSRAM heap and
+	 * eventually corrupts sys_heap bookkeeping, which breaks any
+	 * subsequent in-place nofrendo_main() call. A cold reboot is the
+	 * only reliable recovery; the launcher itself comes back in ~1 s. */
+	k_msleep(50);          /* let printk drain */
+	sys_reboot(SYS_REBOOT_COLD);
 }
 
 static void on_create(lv_obj_t *screen)
