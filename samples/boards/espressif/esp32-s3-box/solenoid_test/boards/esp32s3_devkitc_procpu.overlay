@@ -1,0 +1,41 @@
+/* solenoid_test DTS overlay — ESP32-S3-BOX(-3) on esp32s3_devkitc/esp32s3/procpu
+ *
+ * 给 4路继电器模块的 IN1 一个 GPIO 输出。
+ * 默认引脚：GPIO38（在 ESP32-S3-BOX-3 背部 PMOD-2 上可直接引出，
+ * 也是 esp32s3_devkitc 排针上的常规可用 IO，不与 strapping 冲突）。
+ *
+ * 4路继电器模块通常是「低电平有效」（IN 拉低 → 触点闭合），
+ * 因此用 GPIO_ACTIVE_LOW 标记，应用里 gpio_pin_set(1) 表示 ON。
+ */
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+
+	relays {
+		compatible = "gpio-leds";
+		relay0: relay0 {
+			gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>; /* GPIO38；本模块实测为高电平触发 */
+			label = "Solenoid Relay CH1";
+		};
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+		boot_button: boot_button {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT Button";
+		};
+	};
+
+	aliases {
+		sw0 = &boot_button;
+		relay-fire = &relay0;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
