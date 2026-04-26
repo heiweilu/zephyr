@@ -1,0 +1,30 @@
+{
+  "servers": {
+    "ai-3d-modeler": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/.github/skills/ai-3d-modeler/mcp/dist/index.js"
+      ],
+      "env": {
+        "ARK_API_KEY": "${input:ai3dArkApiKey}",
+        "GPT_GE_API_KEY": "${input:ai3dGptGeApiKey}",
+        "AI3D_OUTPUT_DIR": "${workspaceFolder}/output"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "id": "ai3dArkApiKey",
+      "type": "promptString",
+      "description": "火山方舟 ARK_API_KEY (Doubao-Seed3D-2.0)",
+      "password": true
+    },
+    {
+      "id": "ai3dGptGeApiKey",
+      "type": "promptString",
+      "description": "api.gpt.ge GPT_GE_API_KEY (gpt-image-2)",
+      "password": true
+    }
+  ]
+}

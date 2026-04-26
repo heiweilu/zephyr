@@ -1,0 +1,6 @@
+build/
+src/secrets.h
+pc_server/__pycache__/
+pc_server/.venv/
+pc_server/*.pt
+pc_server/models/

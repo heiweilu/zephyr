@@ -1,0 +1,10 @@
+# Streaming
+opencv-python>=4.8
+fastapi>=0.110
+uvicorn>=0.27
+numpy>=1.24
+
+# Phase 4: face / object recognition (CPU-only, light models).
+# Face: OpenCV YuNet (bundled in opencv-python>=4.7, just needs the onnx).
+ultralytics>=8.1
+requests>=2.31
