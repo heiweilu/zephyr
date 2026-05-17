@@ -14,8 +14,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import subprocess
 import threading
 import time
+
+# Workaround: OpenCV 4.13 on Windows may fail to open USB cameras with the
+# default MSMF backend. Force DirectShow by lowering MSMF priority.
+os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "0")
 
 import cv2
 import numpy as np
@@ -24,6 +30,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
+from color import ColorDetector
 from face import FaceDetector
 from object import ObjectDetector
 
@@ -39,11 +46,16 @@ class CameraGrabber:
     Avoids backpressure: HTTP clients always get the freshest frame, never queue.
     """
 
-    def __init__(self, device: int, src_w: int | None, src_h: int | None) -> None:
+    def __init__(self, device: int, src_w: int | None, src_h: int | None,
+                 device_name: str | None = None) -> None:
         self.device = device
+        self.device_name = device_name
         self.src_w = src_w
         self.src_h = src_h
         self._cap: cv2.VideoCapture | None = None
+        self._ffmpeg_proc: subprocess.Popen | None = None
+        self._frame_w: int = src_w or 640
+        self._frame_h: int = src_h or 480
         self._latest: np.ndarray | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -56,25 +68,92 @@ class CameraGrabber:
             # Fallback to default backend (Linux / macOS).
             self._cap = cv2.VideoCapture(self.device)
         if not self._cap.isOpened():
-            raise RuntimeError(f"Cannot open camera device {self.device}")
-        if self.src_w:
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.src_w)
-        if self.src_h:
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.src_h)
-        actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        logging.info("camera %d opened, capture size %dx%d", self.device, actual_w, actual_h)
+            self._cap.release()
+            self._cap = None
+            # Fallback: use ffmpeg subprocess via DirectShow (works when OpenCV can't enumerate).
+            name = self.device_name or self._discover_camera_name()
+            if name:
+                self._start_ffmpeg(name)
+            else:
+                raise RuntimeError(f"Cannot open camera device {self.device}")
+        else:
+            if self.src_w:
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.src_w)
+            if self.src_h:
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.src_h)
+            self._frame_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self._frame_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            logging.info("camera %d opened (cv2), capture size %dx%d",
+                         self.device, self._frame_w, self._frame_h)
 
         self._thread = threading.Thread(target=self._loop, name="cam-grab", daemon=True)
         self._thread.start()
 
+    def _discover_camera_name(self) -> str | None:
+        """Try ffmpeg -list_devices to find the first video device name."""
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                capture_output=True, timeout=5)
+            # Device names appear in stderr as: "DeviceName" (video)
+            stderr_text = result.stderr.decode("utf-8", errors="replace")
+            for line in stderr_text.splitlines():
+                if "(video)" in line:
+                    # Extract quoted name
+                    start = line.find('"')
+                    end = line.find('"', start + 1)
+                    if start >= 0 and end > start:
+                        name = line[start + 1:end]
+                        logging.info("discovered camera via ffmpeg: %s", name)
+                        return name
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return None
+
+    def _start_ffmpeg(self, name: str) -> None:
+        """Start ffmpeg subprocess to capture from DirectShow device."""
+        cmd = [
+            "ffmpeg", "-f", "dshow",
+            "-vcodec", "mjpeg",
+            "-video_size", f"{self._frame_w}x{self._frame_h}",
+            "-framerate", "30",
+            "-i", f"video={name}",
+            "-pix_fmt", "bgr24",
+            "-f", "rawvideo",
+            "-loglevel", "error",
+            "-"
+        ]
+        self._ffmpeg_proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logging.info("camera opened via ffmpeg (dshow): %s, %dx%d",
+                     name, self._frame_w, self._frame_h)
+
     def _loop(self) -> None:
+        if self._ffmpeg_proc is not None:
+            self._loop_ffmpeg()
+        else:
+            self._loop_cv2()
+
+    def _loop_cv2(self) -> None:
         assert self._cap is not None
         while not self._stop.is_set():
             ok, frame = self._cap.read()
             if not ok or frame is None:
                 time.sleep(0.01)
                 continue
+            with self._lock:
+                self._latest = frame
+
+    def _loop_ffmpeg(self) -> None:
+        assert self._ffmpeg_proc is not None
+        frame_size = self._frame_w * self._frame_h * 3
+        while not self._stop.is_set():
+            raw = self._ffmpeg_proc.stdout.read(frame_size)
+            if len(raw) != frame_size:
+                time.sleep(0.01)
+                continue
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape(
+                self._frame_h, self._frame_w, 3)
             with self._lock:
                 self._latest = frame
 
@@ -88,6 +167,9 @@ class CameraGrabber:
             self._thread.join(timeout=1.0)
         if self._cap is not None:
             self._cap.release()
+        if self._ffmpeg_proc is not None:
+            self._ffmpeg_proc.terminate()
+            self._ffmpeg_proc.wait(timeout=2.0)
 
 
 def _draw_crosshair(img, cx: int, cy: int, color) -> None:
@@ -151,6 +233,11 @@ def _detection_loop() -> None:
                     best_conf = conf
                     best = (x1, y1, x2, y2)
             target_box = best
+        elif mode == "color":
+            boxes = color_detector.detect(frame)
+            if boxes:
+                # Pick the balloon closest to the ground (highest y2).
+                target_box = max(boxes, key=lambda b: b[3])
 
         if target_box is None:
             _publish_target(None, None)
@@ -164,8 +251,11 @@ def _detection_loop() -> None:
 
 
 def render_for_esp32(frame: np.ndarray, frame_no: int) -> bytes:
-    """Resize + encode. No detection here (it runs in its own thread)."""
+    """Resize + encode. Draw crosshair on current target if any."""
     out = cv2.resize(frame, (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
+    tgt = _get_target()
+    if tgt is not None:
+        _draw_crosshair(out, tgt[0], tgt[1], (0, 0, 255))
     cv2.putText(out, f"#{frame_no} {current_mode()}", (4, 18),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
     ok, buf = cv2.imencode(".jpg", out, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
@@ -178,10 +268,11 @@ def render_for_esp32(frame: np.ndarray, frame_no: int) -> bytes:
 
 app = FastAPI(title="smart_camera PC server")
 camera: CameraGrabber | None = None
+color_detector = ColorDetector()
 face_detector = FaceDetector()
 object_detector = ObjectDetector()
 
-VALID_MODES = ("raw", "face", "object")
+VALID_MODES = ("raw", "face", "object", "color")
 _mode_lock = threading.Lock()
 _mode = "raw"
 
@@ -215,6 +306,8 @@ def index() -> str:
 def status() -> dict:
     return {
         "camera_open": camera is not None,
+        "capture_w": camera._frame_w if camera else 0,
+        "capture_h": camera._frame_h if camera else 0,
         "out_w": OUT_W,
         "out_h": OUT_H,
         "mode": current_mode(),
@@ -317,6 +410,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=int, default=0,
                         help="OpenCV camera index (0 is usually the first USB cam)")
+    parser.add_argument("--name", type=str, default=None,
+                        help="Camera device name for ffmpeg fallback (e.g. '5MP USB Camera')")
     parser.add_argument("--src-width", type=int, default=None,
                         help="Capture width hint (e.g. 2944 for 5MP)")
     parser.add_argument("--src-height", type=int, default=None,
@@ -329,7 +424,8 @@ def main() -> None:
                         format="%(asctime)s [%(levelname)s] %(message)s")
 
     global camera
-    camera = CameraGrabber(args.device, args.src_width, args.src_height)
+    camera = CameraGrabber(args.device, args.src_width, args.src_height,
+                           device_name=args.name)
     camera.start()
     threading.Thread(target=_detection_loop, name="det", daemon=True).start()
     try:

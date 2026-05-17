@@ -391,6 +391,26 @@ async def websocket_endpoint(ws: WebSocket):
                     ok = await loop.run_in_executor(
                         None, ser_mgr.save_params) if ser_mgr else False
                     await ws.send_text(json.dumps({"type": "save_result", "ok": ok}))
+                elif msg.get("cmd") == "mode":
+                    mode_name = msg.get("mode", "")
+                    if mode_name and ser_mgr:
+                        lines = await loop.run_in_executor(
+                            None, ser_mgr.send_command, f"tune mode {mode_name}")
+                        current = ""
+                        for l in lines:
+                            if "$MODE" in l:
+                                current = l.split("$MODE")[-1].strip()
+                        await ws.send_text(json.dumps({"type": "mode_result", "ok": bool(current), "mode": current}))
+                    elif not mode_name and ser_mgr:
+                        lines = await loop.run_in_executor(
+                            None, ser_mgr.send_command, "tune mode")
+                        current = ""
+                        for l in lines:
+                            if "$MODE" in l:
+                                current = l.split("$MODE")[-1].strip()
+                        await ws.send_text(json.dumps({"type": "mode_result", "ok": True, "mode": current}))
+                    else:
+                        await ws.send_text(json.dumps({"type": "mode_result", "ok": False, "error": "Not connected"}))
                 elif msg.get("cmd") == "connect":
                     port = msg.get("port", "")
                     if not port:

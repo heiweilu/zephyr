@@ -142,6 +142,12 @@
   <button class="btn btn-secondary" id="btn-refresh" title="从 ESP32 重新读取参数">🔄 Refresh</button>
   <button class="btn btn-primary" id="btn-apply" title="应用 center 到舵机">⚡ Apply Center</button>
   <button class="btn btn-primary" id="btn-save" title="保存参数到 Flash (掉电不丢)">💾 Save to Flash</button>
+  <div style="display:flex;align-items:center;gap:4px;margin-left:8px;border-left:1px solid #555;padding-left:8px;">
+    <span style="font-size:0.75rem;color:#aaa;">Mode:</span>
+    <button class="btn btn-secondary" id="btn-mode-cal" title="校准模式 (舵机静止)">🔧 Cal</button>
+    <button class="btn btn-secondary" id="btn-mode-track" title="追踪模式 (WiFi+视觉)">🎯 Track</button>
+    <button class="btn btn-secondary" id="btn-mode-scan" title="扫描模式 (水平扫)">📡 Scan</button>
+  </div>
   <button class="btn btn-secondary" id="btn-telem" title="开启/关闭遥测">📡 Telem: OFF</button>
   <span class="status disconnected" id="ws-status">Disconnected</span>
 </header>
@@ -266,6 +272,14 @@ function connectWS() {
       btn.textContent = '💾 Save to Flash';
       logMsg(msg.ok ? '💾 Params saved to Flash ✓' : '❌ Save failed');
     }
+    else if (msg.type === 'mode_result') {
+      if (msg.ok && msg.mode) {
+        updateModeButtons(msg.mode);
+        logMsg(`🔧 Mode: ${msg.mode}`);
+      } else {
+        logMsg('❌ Mode switch failed: ' + (msg.error || 'unknown'));
+      }
+    }
     else if (msg.type === 'ports') {
       updatePortList(msg.ports, msg.current, msg.connected);
     }
@@ -291,6 +305,20 @@ function connectWS() {
       }
     }
   };
+}
+
+function updateModeButtons(activeMode) {
+  const map = {calibration: 'cal', tracking: 'track', scan: 'scan'};
+  for (const [mode, suffix] of Object.entries(map)) {
+    const btn = document.getElementById(`btn-mode-${suffix}`);
+    if (mode === activeMode) {
+      btn.classList.remove('btn-secondary');
+      btn.classList.add('btn-primary');
+    } else {
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-secondary');
+    }
+  }
 }
 
 function updatePortList(ports, current, connected) {
@@ -577,6 +605,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ cmd: 'telem', enabled: telemOn }));
     }
+  });
+
+  // Mode buttons
+  ['cal', 'track', 'scan'].forEach(m => {
+    const modeMap = {cal: 'calibration', track: 'tracking', scan: 'scan'};
+    document.getElementById(`btn-mode-${m}`).addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ cmd: 'mode', mode: modeMap[m] }));
+      }
+    });
   });
 
   document.getElementById('btn-cam').addEventListener('click', connectCamera);

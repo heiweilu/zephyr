@@ -83,4 +83,14 @@ void tune_servo_apply_center(void);
 int tune_params_save(void);
 int tune_params_load(void);
 
+/* ── 运行模式 ── */
+enum turret_mode {
+	MODE_CALIBRATION = 0,
+	MODE_TRACKING    = 1,
+	MODE_SCAN        = 2,
+};
+
+/* 全局运行模式 (main.c 中定义, shell 可切换) */
+extern volatile enum turret_mode g_mode;
+
 #endif /* TUNE_PARAMS_H_ */

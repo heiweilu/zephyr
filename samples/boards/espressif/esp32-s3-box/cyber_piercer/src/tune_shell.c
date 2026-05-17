@@ -246,6 +246,39 @@ static int cmd_tune_telem(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+/* ── tune mode 命令 ── */
+static int cmd_tune_mode(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc < 2) {
+		/* 查询当前模式 */
+		const char *names[] = {"calibration", "tracking", "scan"};
+		int m = (int)g_mode;
+
+		if (m >= 0 && m <= 2) {
+			shell_print(sh, "$MODE %s", names[m]);
+		} else {
+			shell_print(sh, "$MODE unknown(%d)", m);
+		}
+		return 0;
+	}
+
+	if (strcmp(argv[1], "calibration") == 0 || strcmp(argv[1], "cal") == 0) {
+		g_mode = MODE_CALIBRATION;
+	} else if (strcmp(argv[1], "tracking") == 0 || strcmp(argv[1], "track") == 0) {
+		g_mode = MODE_TRACKING;
+	} else if (strcmp(argv[1], "scan") == 0) {
+		g_mode = MODE_SCAN;
+	} else {
+		shell_error(sh, "Usage: tune mode [calibration|tracking|scan]");
+		return -EINVAL;
+	}
+
+	const char *names[] = {"calibration", "tracking", "scan"};
+
+	shell_print(sh, "$MODE %s", names[(int)g_mode]);
+	return 0;
+}
+
 /* ── 子命令注册 ── */
 SHELL_STATIC_SUBCMD_SET_CREATE(sub_tune,
 	SHELL_CMD_ARG(get, NULL, "Get param(s): tune get [name]",
@@ -258,6 +291,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_tune,
 		      cmd_tune_save, 1, 0),
 	SHELL_CMD_ARG(telem, NULL, "Telemetry: tune telem <on|off>",
 		      cmd_tune_telem, 1, 1),
+	SHELL_CMD_ARG(mode, NULL, "Mode: tune mode [calibration|tracking|scan]",
+		      cmd_tune_mode, 1, 1),
 	SHELL_SUBCMD_SET_END
 );
 

@@ -27,14 +27,10 @@
 #define ENABLE_SERVO_H    1   /* 水平舵机 */
 #define ENABLE_SERVO_V    1   /* 垂直舵机 */
 #define ENABLE_SOLENOID   0   /* 电磁推杆 (Phase 4+: 打开) */
-#define ENABLE_TRACKING   0   /* 追踪模式 (需要 WiFi + PC server) */
-#define CALIBRATION_MODE  1   /* 校准模式: 上电归零点后静止, 不扫描 */
 
-#if ENABLE_TRACKING
 #include "wifi_mgr.h"
 #include "track_client.h"
 #include "secrets.h"
-#endif
 
 #include "tune_params.h"
 
@@ -57,6 +53,9 @@ volatile struct tune_params g_tune = {
 	.fire_cooldown_ms = 500,  /* ms */
 	.fire_pulse_ms  = 80,     /* ms */
 };
+
+/* 默认启动模式: 校准 (舵机静止) */
+volatile enum turret_mode g_mode = MODE_CALIBRATION;
 
 /* 参数名表 */
 const struct tune_param_entry tune_param_table[TUNE_PARAM_COUNT] = {
@@ -116,7 +115,6 @@ static struct k_work fire_work;
 static atomic_t fire_count = ATOMIC_INIT(0);
 static int64_t last_fire_time = -500; /* will use g_tune.fire_cooldown_ms at runtime */
 
-#if ENABLE_TRACKING
 /* ── 追踪参数 (运行时从 g_tune 读取) ── */
 #define TRACK_FRAME_W     320   /* PC server 输出帧宽 */
 #define TRACK_FRAME_H     240   /* PC server 输出帧高 */
@@ -146,7 +144,9 @@ static void on_track_target(int cx, int cy, void *user)
 	atomic_set(&track_cx, cx);
 	atomic_set(&track_cy, cy);
 }
-#endif
+
+/* WiFi/tracking 懒初始化标志 */
+static bool wifi_initialized;
 
 /* ── 辅助函数 ── */
 
@@ -254,8 +254,8 @@ int main(void)
 	int ret;
 
 	LOG_INF("=== CyberPiercer turret control ===");
-	LOG_INF("Phase config: SERVO_H=%d  SERVO_V=%d  SOLENOID=%d  TRACKING=%d",
-		ENABLE_SERVO_H, ENABLE_SERVO_V, ENABLE_SOLENOID, ENABLE_TRACKING);
+	LOG_INF("Phase config: SERVO_H=%d  SERVO_V=%d  SOLENOID=%d  mode=%d",
+		ENABLE_SERVO_H, ENABLE_SERVO_V, ENABLE_SOLENOID, (int)g_mode);
 
 	/* ── NVS Settings: 加载保存的参数 ── */
 	ret = settings_subsys_init();
@@ -317,238 +317,185 @@ int main(void)
 	LOG_INF("servo_v ready: GPIO10, center=%d°", pulse_to_deg(SERVO_V_CENTER));
 #endif
 
-	LOG_INF("init complete. BOOT=manual fire.");
+	LOG_INF("init complete. mode=%d (0=cal,1=track,2=scan)", g_mode);
 
-#if ENABLE_TRACKING
-	/* ── WiFi + 追踪客户端 ── */
-	{
-		char ip[16];
-
-		LOG_INF("Connecting WiFi ...");
-		ret = wifi_mgr_connect_blocking(ip, sizeof(ip));
-		if (ret) {
-			LOG_ERR("WiFi connect failed: %d", ret);
-			return ret;
-		}
-		LOG_INF("WiFi OK, IP=%s", ip);
-
-		ret = track_client_start(PC_SERVER_HOST, PC_SERVER_PORT,
-					 on_track_target, NULL);
-		if (ret) {
-			LOG_ERR("track_client_start failed: %d", ret);
-			return ret;
-		}
-		LOG_INF("track client started → " PC_SERVER_HOST ":%d",
-			PC_SERVER_PORT);
-	}
-
-	/* ── 追踪主循环 (绝对映射) ── */
+	/* ── 主循环状态变量 ── */
 	int32_t h_pulse = (int32_t)SERVO_CENTER;
 	int32_t v_pulse = (int32_t)SERVO_V_CENTER;
 	int32_t ema_cx = TRACK_FRAME_W / 2;
 	int32_t ema_cy = TRACK_FRAME_H / 2;
 	bool ema_h_init = false;
 	bool ema_v_init = false;
-
-	/* 3-点中位数滤波: 消除 YOLO 检测尖刺 */
 	int med_buf_x[3] = {-1, -1, -1};
 	int med_buf_y[3] = {-1, -1, -1};
 	int med_idx_x = 0, med_idx_y = 0;
-
-	LOG_INF("Entering tracking loop (absolute map, slew=%d us/cycle)",
-		TRACK_SLEW_RATE);
-	LOG_INF("  H map: cx=0→%uus, cx=%d→%uus",
-		(uint32_t)H_LEFT_PULSE / 1000,
-		TRACK_FRAME_W,
-		(uint32_t)H_RIGHT_PULSE / 1000);
-	LOG_INF("  V map: cy=0→%uus, cy=%d→%uus",
-		(uint32_t)V_TOP_PULSE / 1000,
-		TRACK_FRAME_H,
-		(uint32_t)V_BOTTOM_PULSE / 1000);
+	int h_dir = 1;
 
 	while (1) {
-		int cx = (int)atomic_get(&track_cx);
-		int cy = (int)atomic_get(&track_cy);
+		switch (g_mode) {
+		case MODE_CALIBRATION:
+			/* 校准模式: 舵机静止在 center */
+			k_msleep(100);
+			break;
 
-		int32_t h_diff = 0, v_diff = 0;
-		int32_t slew = (int32_t)PWM_USEC(TRACK_SLEW_RATE);
+		case MODE_TRACKING:
+			/* 懒初始化 WiFi + track_client */
+			if (!wifi_initialized) {
+				char ip[16];
 
-		/* ── 水平追踪 ── */
-		if (cx >= 0) {
-			med_buf_x[med_idx_x % 3] = cx;
-			med_idx_x++;
+				LOG_INF("TRACKING: connecting WiFi...");
+				ret = wifi_mgr_connect_blocking(ip, sizeof(ip));
+				if (ret) {
+					LOG_ERR("WiFi failed: %d, back to calibration", ret);
+					g_mode = MODE_CALIBRATION;
+					break;
+				}
+				LOG_INF("WiFi OK, IP=%s", ip);
 
-			int med_cx;
-			if (med_idx_x < 3) {
-				med_cx = cx;
-			} else {
-				int a = med_buf_x[0], b = med_buf_x[1],
-				    c = med_buf_x[2], t;
-				if (a > b) { t = a; a = b; b = t; }
-				if (b > c) { t = b; b = c; c = t; }
-				if (a > b) { t = a; a = b; b = t; }
-				med_cx = b;
+				ret = track_client_start(PC_SERVER_HOST, PC_SERVER_PORT,
+							 on_track_target, NULL);
+				if (ret) {
+					LOG_ERR("track_client failed: %d, back to calibration", ret);
+					g_mode = MODE_CALIBRATION;
+					break;
+				}
+				LOG_INF("track client → " PC_SERVER_HOST ":%d", PC_SERVER_PORT);
+				wifi_initialized = true;
+
+				/* 重置追踪状态 */
+				ema_h_init = false;
+				ema_v_init = false;
+				med_idx_x = 0;
+				med_idx_y = 0;
+				h_pulse = (int32_t)SERVO_CENTER;
+				v_pulse = (int32_t)SERVO_V_CENTER;
 			}
 
-			if (!ema_h_init) {
-				ema_cx = med_cx;
-				ema_h_init = true;
-			} else {
-				ema_cx = (EMA_ALPHA_NUM * med_cx +
-					  (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * ema_cx) /
-					 EMA_ALPHA_DEN;
-			}
+			/* 追踪一帧 */
+			{
+				int cx = (int)atomic_get(&track_cx);
+				int cy = (int)atomic_get(&track_cy);
+				int32_t h_diff = 0, v_diff = 0;
+				int32_t slew = (int32_t)PWM_USEC(TRACK_SLEW_RATE);
 
-			int32_t h_target = (int32_t)H_LEFT_PULSE +
-				((int32_t)H_RIGHT_PULSE - (int32_t)H_LEFT_PULSE) *
-				ema_cx / TRACK_FRAME_W +
-				(int32_t)PWM_USEC(TRACK_H_OFFSET);
-			if (h_target > (int32_t)SERVO_H_MAX) {
-				h_target = (int32_t)SERVO_H_MAX;
-			} else if (h_target < (int32_t)SERVO_H_MIN) {
-				h_target = (int32_t)SERVO_H_MIN;
-			}
-
-			h_diff = h_target - h_pulse;
-			if (h_diff > slew) { h_diff = slew; }
-			else if (h_diff < -slew) { h_diff = -slew; }
-			if (h_diff != 0) {
-				h_pulse += h_diff;
+				/* 水平追踪 */
+				if (cx >= 0) {
+					med_buf_x[med_idx_x % 3] = cx;
+					med_idx_x++;
+					int med_cx;
+					if (med_idx_x < 3) {
+						med_cx = cx;
+					} else {
+						int a = med_buf_x[0], b = med_buf_x[1],
+						    c = med_buf_x[2], t;
+						if (a > b) { t = a; a = b; b = t; }
+						if (b > c) { t = b; b = c; c = t; }
+						if (a > b) { t = a; a = b; b = t; }
+						med_cx = b;
+					}
+					if (!ema_h_init) {
+						ema_cx = med_cx;
+						ema_h_init = true;
+					} else {
+						ema_cx = (EMA_ALPHA_NUM * med_cx +
+							  (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * ema_cx) /
+							 EMA_ALPHA_DEN;
+					}
+					int32_t h_target = (int32_t)H_LEFT_PULSE +
+						((int32_t)H_RIGHT_PULSE - (int32_t)H_LEFT_PULSE) *
+						ema_cx / TRACK_FRAME_W +
+						(int32_t)PWM_USEC(TRACK_H_OFFSET);
+					if (h_target > (int32_t)SERVO_H_MAX) h_target = (int32_t)SERVO_H_MAX;
+					if (h_target < (int32_t)SERVO_H_MIN) h_target = (int32_t)SERVO_H_MIN;
+					h_diff = h_target - h_pulse;
+					if (h_diff > slew) h_diff = slew;
+					else if (h_diff < -slew) h_diff = -slew;
+					if (h_diff != 0) {
+						h_pulse += h_diff;
 #if ENABLE_SERVO_H
-				servo_set(&servo_h, (uint32_t)h_pulse, "servo_h");
+						servo_set(&servo_h, (uint32_t)h_pulse, "servo_h");
 #endif
-			}
-		}
+					}
+				}
 
-		/* ── 垂直追踪 ── */
-		if (cy >= 0) {
-			med_buf_y[med_idx_y % 3] = cy;
-			med_idx_y++;
-
-			int med_cy;
-			if (med_idx_y < 3) {
-				med_cy = cy;
-			} else {
-				int a = med_buf_y[0], b = med_buf_y[1],
-				    c = med_buf_y[2], t;
-				if (a > b) { t = a; a = b; b = t; }
-				if (b > c) { t = b; b = c; c = t; }
-				if (a > b) { t = a; a = b; b = t; }
-				med_cy = b;
-			}
-
-			if (!ema_v_init) {
-				ema_cy = med_cy;
-				ema_v_init = true;
-			} else {
-				ema_cy = (EMA_ALPHA_NUM * med_cy +
-					  (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * ema_cy) /
-					 EMA_ALPHA_DEN;
-			}
-
-			int32_t v_target = (int32_t)V_TOP_PULSE +
-				((int32_t)V_BOTTOM_PULSE - (int32_t)V_TOP_PULSE) *
-				ema_cy / TRACK_FRAME_H +
-				(int32_t)(TRACK_V_OFFSET * 1000);
-			if (v_target > (int32_t)SERVO_V_MAX) {
-				v_target = (int32_t)SERVO_V_MAX;
-			} else if (v_target < (int32_t)SERVO_V_MIN) {
-				v_target = (int32_t)SERVO_V_MIN;
-			}
-
-			v_diff = v_target - v_pulse;
-			if (v_diff > slew) { v_diff = slew; }
-			else if (v_diff < -slew) { v_diff = -slew; }
-			if (v_diff != 0) {
-				v_pulse += v_diff;
+				/* 垂直追踪 */
+				if (cy >= 0) {
+					med_buf_y[med_idx_y % 3] = cy;
+					med_idx_y++;
+					int med_cy;
+					if (med_idx_y < 3) {
+						med_cy = cy;
+					} else {
+						int a = med_buf_y[0], b = med_buf_y[1],
+						    c = med_buf_y[2], t;
+						if (a > b) { t = a; a = b; b = t; }
+						if (b > c) { t = b; b = c; c = t; }
+						if (a > b) { t = a; a = b; b = t; }
+						med_cy = b;
+					}
+					if (!ema_v_init) {
+						ema_cy = med_cy;
+						ema_v_init = true;
+					} else {
+						ema_cy = (EMA_ALPHA_NUM * med_cy +
+							  (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * ema_cy) /
+							 EMA_ALPHA_DEN;
+					}
+					int32_t v_target = (int32_t)V_TOP_PULSE +
+						((int32_t)V_BOTTOM_PULSE - (int32_t)V_TOP_PULSE) *
+						ema_cy / TRACK_FRAME_H +
+						(int32_t)(TRACK_V_OFFSET * 1000);
+					if (v_target > (int32_t)SERVO_V_MAX) v_target = (int32_t)SERVO_V_MAX;
+					if (v_target < (int32_t)SERVO_V_MIN) v_target = (int32_t)SERVO_V_MIN;
+					v_diff = v_target - v_pulse;
+					if (v_diff > slew) v_diff = slew;
+					else if (v_diff < -slew) v_diff = -slew;
+					if (v_diff != 0) {
+						v_pulse += v_diff;
 #if ENABLE_SERVO_V
-				servo_set(&servo_v, (uint32_t)v_pulse, "servo_v");
+						servo_set(&servo_v, (uint32_t)v_pulse, "servo_v");
 #endif
-			}
-		}
+					}
+				}
 
-		/* ── 自动发射: 双轴已收敛且目标持续存在时开炮 ── */
+				/* 自动发射 */
 #if ENABLE_SOLENOID
-		if (cx >= 0 && cy >= 0 && h_diff == 0 && v_diff == 0) {
-			int64_t now = k_uptime_get();
-
-			if ((now - last_fire_time) >= FIRE_COOLDOWN_MS) {
-				fire_once("track");
+				if (cx >= 0 && cy >= 0 && h_diff == 0 && v_diff == 0) {
+					int64_t now = k_uptime_get();
+					if ((now - last_fire_time) >= FIRE_COOLDOWN_MS) {
+						fire_once("track");
+					}
+				}
+#endif
+				if (cx >= 0 || cy >= 0) {
+					LOG_INF("TRK cx=%d cy=%d H=%uus%s V=%uus%s",
+						cx, cy,
+						(uint32_t)h_pulse / 1000,
+						h_diff ? "M" : ".",
+						(uint32_t)v_pulse / 1000,
+						v_diff ? "M" : ".");
+				}
 			}
-		}
-#endif
+			k_msleep(TRACK_INTERVAL_MS);
+			break;
 
-		if (cx >= 0 || cy >= 0) {
-			LOG_INF("TRK cx=%d cy=%d H=%uus%s V=%uus%s",
-				cx, cy,
-				(uint32_t)h_pulse / 1000,
-				h_diff ? "M" : ".",
-				(uint32_t)v_pulse / 1000,
-				v_diff ? "M" : ".");
-		}
-
-		k_msleep(TRACK_INTERVAL_MS);
-	}
-
-#else /* !ENABLE_TRACKING — 扫描模式 */
-	LOG_INF("Entering scan loop.");
-
-#if CALIBRATION_MODE
-	/* 校准模式: 舵机已归位到 CENTER, 静止不动等待观察 */
-	LOG_INF("CALIBRATION MODE: servos at center, holding still.");
-	LOG_INF("  H center = %u us", (uint32_t)SERVO_CENTER / 1000);
-	LOG_INF("  V center = %u us", (uint32_t)SERVO_V_CENTER / 1000);
-	while (1) {
-		k_msleep(1000);
-	}
-#endif
-
-	/* ── 主循环: 扫描 ── */
-	int32_t h_pulse = (int32_t)SERVO_CENTER;
-	int h_dir = 1; /* 1=向右, -1=向左 */
-
-#if ENABLE_SERVO_V && !ENABLE_SERVO_H
-	/* Phase 2: 垂直舵机独立扫描 */
-	int32_t v_pulse = (int32_t)SERVO_V_CENTER;
-	int v_dir = 1;
-#endif
-
-	while (1) {
+		case MODE_SCAN:
+			/* 扫描模式 */
 #if ENABLE_SERVO_H
-		h_pulse += h_dir * (int32_t)SERVO_STEP;
-
-		if (h_pulse >= (int32_t)SERVO_H_MAX) {
-			h_pulse = (int32_t)SERVO_H_MAX;
-			h_dir = -1;
-		} else if (h_pulse <= (int32_t)SERVO_H_MIN) {
-			h_pulse = (int32_t)SERVO_H_MIN;
-			h_dir = 1;
-		}
-
-		servo_set(&servo_h, (uint32_t)h_pulse, "servo_h");
-		LOG_INF("H=%d° (pulse=%uus)", pulse_to_deg((uint32_t)h_pulse),
-			(uint32_t)h_pulse / 1000);
+			h_pulse += h_dir * (int32_t)SERVO_STEP;
+			if (h_pulse >= (int32_t)SERVO_H_MAX) {
+				h_pulse = (int32_t)SERVO_H_MAX;
+				h_dir = -1;
+			} else if (h_pulse <= (int32_t)SERVO_H_MIN) {
+				h_pulse = (int32_t)SERVO_H_MIN;
+				h_dir = 1;
+			}
+			servo_set(&servo_h, (uint32_t)h_pulse, "servo_h");
 #endif
-
-#if ENABLE_SERVO_V && !ENABLE_SERVO_H
-		v_pulse += v_dir * (int32_t)SERVO_STEP;
-
-		if (v_pulse >= (int32_t)SERVO_H_MAX) {
-			v_pulse = (int32_t)SERVO_H_MAX;
-			v_dir = -1;
-		} else if (v_pulse <= (int32_t)SERVO_H_MIN) {
-			v_pulse = (int32_t)SERVO_H_MIN;
-			v_dir = 1;
+			k_msleep(SERVO_STEP_MS);
+			break;
 		}
-
-		servo_set(&servo_v, (uint32_t)v_pulse, "servo_v");
-		LOG_INF("V=%d° (pulse=%uus)", pulse_to_deg((uint32_t)v_pulse),
-			(uint32_t)v_pulse / 1000);
-#endif
-
-		k_msleep(SERVO_STEP_MS);
 	}
-#endif /* ENABLE_TRACKING */
 
 	return 0;
 }
