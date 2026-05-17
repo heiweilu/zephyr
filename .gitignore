@@ -121,3 +121,29 @@ YAMLLint.txt
 ZephyrModuleFile.txt
 
 .github/
+output/
+fig/
+.claude/
+
+# Debug diagnostic outputs
+track_diag_*.png
+track_diag_*.csv
+
+# Build logs (not Zephyr build dirs)
+build_log.txt
+build_out.txt
+build_output.txt
+build_stderr.txt
+build_stdout.txt
+
+# Temporary scripts
+create_model.py
+test_fusion.py
+
+# Local tool/session data
+.wolf/
+settings.local.json
+skills-lock.json
+
+# Test images
+**/test_cam.jpg

@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CyberPiercer Tuner</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #1a1a2e; --card: #16213e; --accent: #0f3460;
+    --hi: #e94560; --text: #eee; --muted: #888;
+    --green: #4ecca3; --orange: #f0a500;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    grid-template-rows: auto 1fr auto;
+    height: 100vh; gap: 12px; padding: 12px;
+  }
+
+  /* ── Header ── */
+  header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 16px;
+    padding: 8px 16px;
+    background: var(--card); border-radius: 8px;
+  }
+  header h1 { font-size: 1.2em; }
+  header .status {
+    margin-left: auto; padding: 4px 12px;
+    border-radius: 12px; font-size: 0.85em;
+  }
+  .status.connected { background: var(--green); color: #111; }
+  .status.disconnected { background: var(--hi); color: #fff; }
+
+  /* ── Left panel: params ── */
+  .params-panel {
+    grid-row: 2;
+    background: var(--card); border-radius: 8px;
+    padding: 16px; overflow-y: auto;
+  }
+  .param-group { margin-bottom: 16px; }
+  .param-group h3 {
+    font-size: 0.85em; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 8px; border-bottom: 1px solid var(--accent);
+    padding-bottom: 4px;
+  }
+  .param-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 60px;
+    align-items: center; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .param-row label {
+    font-size: 0.85em; color: var(--muted);
+    text-align: right;
+  }
+  .param-row input[type="range"] {
+    width: 100%;
+    accent-color: var(--hi);
+  }
+  .param-row .val {
+    font-family: 'Consolas', monospace;
+    font-size: 0.9em; color: var(--green);
+    text-align: center;
+    background: var(--accent); border-radius: 4px;
+    padding: 2px 4px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .param-row .val:hover { border-color: var(--hi); }
+  .param-row .val.editing {
+    background: #222; color: #fff;
+    border-color: var(--green);
+  }
+
+  /* ── Right panel: charts + camera ── */
+  .main-panel {
+    grid-row: 2;
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 12px;
+  }
+  .chart-card, .camera-card {
+    background: var(--card); border-radius: 8px;
+    padding: 12px; position: relative;
+    overflow: hidden;
+  }
+  .chart-card canvas { width: 100% !important; height: 100% !important; }
+  .camera-card { display: flex; flex-direction: column; }
+  .camera-card h3 { font-size: 0.9em; color: var(--muted); margin-bottom: 8px; }
+  .camera-card img {
+    flex: 1; width: 100%; object-fit: contain;
+    background: #000; border-radius: 4px;
+  }
+  .camera-card .cam-controls {
+    display: flex; gap: 8px; margin-top: 8px; align-items: center;
+  }
+  .camera-card input[type="text"] {
+    flex: 1; padding: 4px 8px;
+    background: var(--accent); color: var(--text);
+    border: 1px solid var(--muted); border-radius: 4px;
+    font-size: 0.85em;
+  }
+
+  /* ── Footer ── */
+  footer {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px;
+    background: var(--card); border-radius: 8px;
+    font-size: 0.85em; color: var(--muted);
+  }
+  footer .log-line { flex: 1; font-family: monospace; }
+
+  /* ── Buttons ── */
+  .btn {
+    padding: 6px 14px; border: none; border-radius: 4px;
+    font-size: 0.85em; cursor: pointer; font-weight: 600;
+  }
+  .btn-primary { background: var(--hi); color: #fff; }
+  .btn-primary:hover { background: #c73450; }
+  .btn-secondary { background: var(--accent); color: var(--text); }
+  .btn-secondary:hover { background: #1a4a7a; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <h1>🎯 CyberPiercer Tuner</h1>
+  <div style="display:flex;align-items:center;gap:6px;">
+    <select id="port-select" title="选择串口" style="padding:4px 8px;border-radius:6px;border:1px solid #555;background:#222;color:#eee;font-size:0.85rem;min-width:100px;">
+      <option value="">-- 选择端口 --</option>
+    </select>
+    <button class="btn btn-primary" id="btn-connect" title="连接/重连串口">🔌 Connect</button>
+    <span class="status disconnected" id="serial-status" style="font-size:0.75rem;">Serial: ?</span>
+  </div>
+  <button class="btn btn-secondary" id="btn-refresh" title="从 ESP32 重新读取参数">🔄 Refresh</button>
+  <button class="btn btn-primary" id="btn-apply" title="应用 center 到舵机">⚡ Apply Center</button>
+  <button class="btn btn-primary" id="btn-save" title="保存参数到 Flash (掉电不丢)">💾 Save to Flash</button>
+  <button class="btn btn-secondary" id="btn-telem" title="开启/关闭遥测">📡 Telem: OFF</button>
+  <span class="status disconnected" id="ws-status">Disconnected</span>
+</header>
+
+<!-- Left: Parameters -->
+<div class="params-panel" id="params-panel">
+  <div class="param-group" id="grp-servo">
+    <h3>🎛 舵机中点</h3>
+  </div>
+  <div class="param-group" id="grp-mapping">
+    <h3>📐 映射范围</h3>
+  </div>
+  <div class="param-group" id="grp-offset">
+    <h3>🔧 视差补偿</h3>
+  </div>
+  <div class="param-group" id="grp-control">
+    <h3>⚙️ 控制参数</h3>
+  </div>
+  <div class="param-group" id="grp-fire">
+    <h3>💥 发射参数</h3>
+  </div>
+</div>
+
+<!-- Right: Charts + Camera -->
+<div class="main-panel">
+  <div class="chart-card">
+    <canvas id="chart-servo"></canvas>
+  </div>
+  <div class="camera-card">
+    <h3>📷 Camera Feed</h3>
+    <img id="cam-img" src="" alt="Camera not connected">
+    <div class="cam-controls">
+      <input type="text" id="cam-url" placeholder="http://localhost:8080/mjpeg">
+      <button class="btn btn-secondary" id="btn-cam">Connect</button>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer>
+  <span class="log-line" id="log-line">Ready.</span>
+</footer>
+
+<script>
+// ── Parameter definitions (must match firmware) ──
+const PARAMS = {
+  h_center:      { group: 'servo',   label: 'H Center',       min: 500, max: 2500, step: 1, unit: 'μs' },
+  v_center:      { group: 'servo',   label: 'V Center',       min: 500, max: 2500, step: 1, unit: 'μs' },
+  h_left:        { group: 'mapping', label: 'H Left (cx=0)',   min: 500, max: 2500, step: 10, unit: 'μs' },
+  h_right:       { group: 'mapping', label: 'H Right (cx=W)',  min: 500, max: 2500, step: 10, unit: 'μs' },
+  v_top:         { group: 'mapping', label: 'V Top (cy=0)',    min: 500, max: 2500, step: 10, unit: 'μs' },
+  v_bottom:      { group: 'mapping', label: 'V Bottom (cy=H)', min: 500, max: 2500, step: 10, unit: 'μs' },
+  h_offset:      { group: 'offset',  label: 'H Offset',       min: -500, max: 500, step: 1, unit: 'μs' },
+  v_offset:      { group: 'offset',  label: 'V Offset',       min: -500, max: 500, step: 1, unit: 'μs' },
+  slew_rate:     { group: 'control', label: 'Slew Rate',      min: 10, max: 500, step: 5, unit: 'μs/cyc' },
+  interval:      { group: 'control', label: 'Interval',       min: 5,  max: 200, step: 5, unit: 'ms' },
+  ema_num:       { group: 'control', label: 'EMA Num',        min: 1,  max: 19,  step: 1, unit: '' },
+  ema_den:       { group: 'control', label: 'EMA Den',        min: 2,  max: 100, step: 1, unit: '' },
+  fire_cooldown: { group: 'fire',    label: 'Fire Cooldown',  min: 100, max: 5000, step: 50, unit: 'ms' },
+  fire_pulse:    { group: 'fire',    label: 'Fire Pulse',     min: 20,  max: 500, step: 5, unit: 'ms' },
+};
+
+// Current values
+const values = {};
+let ws = null;
+let telemOn = false;
+let debounceTimers = {};
+
+// ── Log ──
+function logMsg(msg) {
+  document.getElementById('log-line').textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+}
+
+// ── WebSocket ──
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById('ws-status').textContent = 'Connected';
+    document.getElementById('ws-status').className = 'status connected';
+    logMsg('WebSocket connected');
+    // Request current params and port list
+    ws.send(JSON.stringify({ cmd: 'get_params' }));
+    ws.send(JSON.stringify({ cmd: 'get_ports' }));
+  };
+
+  ws.onclose = () => {
+    document.getElementById('ws-status').textContent = 'Disconnected';
+    document.getElementById('ws-status').className = 'status disconnected';
+    logMsg('WebSocket disconnected, reconnecting in 2s...');
+    setTimeout(connectWS, 2000);
+  };
+
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+
+    if (msg.type === 'params') {
+      // Update all param values
+      for (const [name, info] of Object.entries(msg.data)) {
+        values[name] = info.value;
+        updateSlider(name, info.value);
+      }
+      logMsg('Parameters loaded from ESP32');
+    }
+    else if (msg.type === 'set_result') {
+      if (msg.data.ok) {
+        logMsg(`SET ${msg.data.name} = ${msg.data.value} ✓`);
+      } else {
+        logMsg(`SET failed: ${msg.data.error || 'unknown'}`);
+      }
+    }
+    else if (msg.type === 'telem') {
+      addTelemPoint(msg);
+    }
+    else if (msg.type === 'apply_result') {
+      logMsg(msg.ok ? 'Center applied to servos ✓' : 'Apply failed');
+    }
+    else if (msg.type === 'save_result') {
+      const btn = document.getElementById('btn-save');
+      btn.disabled = false;
+      btn.textContent = '💾 Save to Flash';
+      logMsg(msg.ok ? '💾 Params saved to Flash ✓' : '❌ Save failed');
+    }
+    else if (msg.type === 'ports') {
+      updatePortList(msg.ports, msg.current, msg.connected);
+    }
+    else if (msg.type === 'connect_result') {
+      const ss = document.getElementById('serial-status');
+      const btn = document.getElementById('btn-connect');
+      if (msg.ok && msg.port) {
+        ss.textContent = `Serial: ${msg.port}`;
+        ss.className = 'status connected';
+        btn.textContent = '🔌 Reconnect';
+        logMsg(`✓ Serial connected to ${msg.port}`);
+        // Refresh params after connect
+        ws.send(JSON.stringify({ cmd: 'get_params' }));
+      } else if (msg.ok && msg.connected === false) {
+        ss.textContent = 'Serial: OFF';
+        ss.className = 'status disconnected';
+        btn.textContent = '🔌 Connect';
+        logMsg('Serial disconnected');
+      } else {
+        ss.textContent = 'Serial: ERR';
+        ss.className = 'status disconnected';
+        logMsg(`❌ Connect failed: ${msg.error}`);
+      }
+    }
+  };
+}
+
+function updatePortList(ports, current, connected) {
+  const sel = document.getElementById('port-select');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const p of ports) {
+    const opt = document.createElement('option');
+    opt.value = p.device;
+    opt.textContent = `${p.device} - ${p.desc}`;
+    sel.appendChild(opt);
+  }
+  // Select current port
+  sel.value = current || prev || (ports.length ? ports[0].device : '');
+  // Update serial status
+  const ss = document.getElementById('serial-status');
+  const btn = document.getElementById('btn-connect');
+  if (connected) {
+    ss.textContent = `Serial: ${current}`;
+    ss.className = 'status connected';
+    btn.textContent = '🔌 Reconnect';
+  } else {
+    ss.textContent = 'Serial: OFF';
+    ss.className = 'status disconnected';
+    btn.textContent = '🔌 Connect';
+  }
+}
+
+// ── Build UI ──
+function buildParamUI() {
+  for (const [name, def] of Object.entries(PARAMS)) {
+    const group = document.getElementById(`grp-${def.group}`);
+    if (!group) continue;
+
+    const row = document.createElement('div');
+    row.className = 'param-row';
+    row.innerHTML = `
+      <label title="${name}">${def.label}</label>
+      <input type="range" id="slider-${name}"
+             min="${def.min}" max="${def.max}" step="${def.step}"
+             value="${def.min}">
+      <span class="val" id="val-${name}" title="Click to edit">${def.min}</span>
+    `;
+    group.appendChild(row);
+
+    // Slider change → send to ESP32 (debounced)
+    const slider = row.querySelector('input[type="range"]');
+    slider.addEventListener('input', () => {
+      const v = parseInt(slider.value);
+      values[name] = v;
+      document.getElementById(`val-${name}`).textContent = v;
+
+      // Debounce: wait 100ms of no change before sending
+      clearTimeout(debounceTimers[name]);
+      debounceTimers[name] = setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ cmd: 'set_param', name, value: v }));
+        }
+      }, 100);
+    });
+
+    // Value click → direct input
+    const valSpan = row.querySelector('.val');
+    function attachEditHandler(span) {
+      span.addEventListener('click', function onValClick() {
+        const current = values[name] || 0;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.value = current;
+        input.min = def.min;
+        input.max = def.max;
+        input.style.cssText = 'width:56px;font-size:0.85em;text-align:center;background:var(--accent);color:var(--text);border:1px solid var(--green);border-radius:4px;';
+        span.replaceWith(input);
+        input.focus();
+        input.select();
+
+        const commit = () => {
+          let v = parseInt(input.value);
+          v = Math.max(def.min, Math.min(def.max, v));
+          values[name] = v;
+          const newSpan = document.createElement('span');
+          newSpan.className = 'val';
+          newSpan.id = `val-${name}`;
+          newSpan.title = 'Click to edit';
+          newSpan.textContent = v;
+          input.replaceWith(newSpan);
+          slider.value = v;
+
+          // Re-attach click handler to new span
+          attachEditHandler(newSpan);
+
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ cmd: 'set_param', name, value: v }));
+          }
+        };
+
+        input.addEventListener('blur', commit);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') commit();
+          if (e.key === 'Escape') {
+            const newSpan = document.createElement('span');
+            newSpan.className = 'val';
+            newSpan.id = `val-${name}`;
+            newSpan.textContent = current;
+            input.replaceWith(newSpan);
+            attachEditHandler(newSpan);
+          }
+        });
+      });
+    }
+    attachEditHandler(valSpan);
+  }
+}
+
+function updateSlider(name, value) {
+  const slider = document.getElementById(`slider-${name}`);
+  const val = document.getElementById(`val-${name}`);
+  if (slider) slider.value = value;
+  if (val) val.textContent = value;
+}
+
+// ── Chart ──
+const MAX_POINTS = 200;
+const telemData = {
+  h_us: [], v_us: [], cx: [], cy: [], ts: []
+};
+
+let chart = null;
+
+function initChart() {
+  const ctx = document.getElementById('chart-servo').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'H pulse (μs)',
+          data: [],
+          borderColor: '#e94560',
+          backgroundColor: 'rgba(233,69,96,0.1)',
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: 'V pulse (μs)',
+          data: [],
+          borderColor: '#4ecca3',
+          backgroundColor: 'rgba(78,204,163,0.1)',
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: 'cx',
+          data: [],
+          borderColor: '#f0a500',
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          borderDash: [4, 2],
+          yAxisID: 'y1',
+        },
+        {
+          label: 'cy',
+          data: [],
+          borderColor: '#7c83fd',
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          borderDash: [4, 2],
+          yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { labels: { color: '#eee', font: { size: 11 } } },
+      },
+      scales: {
+        x: {
+          display: true,
+          ticks: { color: '#888', maxTicksLimit: 10 },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+        },
+        y: {
+          position: 'left',
+          title: { display: true, text: 'Pulse (μs)', color: '#888' },
+          min: 500, max: 2500,
+          ticks: { color: '#888' },
+          grid: { color: 'rgba(255,255,255,0.08)' },
+        },
+        y1: {
+          position: 'right',
+          title: { display: true, text: 'Pixel', color: '#888' },
+          min: 0, max: 320,
+          ticks: { color: '#888' },
+          grid: { drawOnChartArea: false },
+        },
+      },
+    },
+  });
+}
+
+function addTelemPoint(msg) {
+  const t = new Date(msg.ts * 1000).toLocaleTimeString([], {
+    hour12: false, minute: '2-digit', second: '2-digit'
+  });
+
+  chart.data.labels.push(t);
+  chart.data.datasets[0].data.push(msg.h_us);
+  chart.data.datasets[1].data.push(msg.v_us);
+  chart.data.datasets[2].data.push(msg.cx >= 0 ? msg.cx : null);
+  chart.data.datasets[3].data.push(msg.cy >= 0 ? msg.cy : null);
+
+  // Trim to MAX_POINTS
+  if (chart.data.labels.length > MAX_POINTS) {
+    chart.data.labels.shift();
+    chart.data.datasets.forEach(ds => ds.data.shift());
+  }
+
+  chart.update();
+}
+
+// ── Camera ──
+function connectCamera() {
+  const url = document.getElementById('cam-url').value.trim();
+  if (url) {
+    document.getElementById('cam-img').src = url;
+    logMsg(`Camera: ${url}`);
+  }
+}
+
+// ── Init ──
+document.addEventListener('DOMContentLoaded', () => {
+  buildParamUI();
+  initChart();
+  connectWS();
+
+  // Buttons
+  document.getElementById('btn-connect').addEventListener('click', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const port = document.getElementById('port-select').value;
+      if (port) {
+        ws.send(JSON.stringify({ cmd: 'connect', port }));
+        logMsg(`Connecting to ${port}...`);
+      } else {
+        logMsg('Please select a port first');
+      }
+    }
+  });
+
+  document.getElementById('btn-refresh').addEventListener('click', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: 'get_params' }));
+    }
+  });
+
+  document.getElementById('btn-apply').addEventListener('click', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: 'apply' }));
+    }
+  });
+
+  document.getElementById('btn-save').addEventListener('click', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const btn = document.getElementById('btn-save');
+      btn.disabled = true;
+      btn.textContent = '⏳ Saving...';
+      ws.send(JSON.stringify({ cmd: 'save' }));
+      logMsg('Saving params to Flash...');
+    }
+  });
+
+  document.getElementById('btn-telem').addEventListener('click', () => {
+    telemOn = !telemOn;
+    document.getElementById('btn-telem').textContent = `📡 Telem: ${telemOn ? 'ON' : 'OFF'}`;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: 'telem', enabled: telemOn }));
+    }
+  });
+
+  document.getElementById('btn-cam').addEventListener('click', connectCamera);
+
+  // Default camera URL
+  document.getElementById('cam-url').value = 'http://localhost:8080/mjpeg';
+});
+</script>
+</body>
+</html>
