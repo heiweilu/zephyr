@@ -38,6 +38,12 @@ struct tune_params {
 	/* 发射参数 */
 	int32_t fire_cooldown_ms;
 	int32_t fire_pulse_ms;
+
+	/* PID 闭环追踪参数 (摄像头随动模式) */
+	int32_t pid_kp;      /* 比例增益 (实际 Kp = pid_kp / 100) */
+	int32_t pid_ki;      /* 积分增益 (实际 Ki = pid_ki / 100) */
+	int32_t pid_kd;      /* 微分增益 (实际 Kd = pid_kd / 100) */
+	int32_t pid_imax;    /* 积分限幅 (px·cycles) */
 };
 
 /* 全局参数实例 (main.c 中定义) */
@@ -59,6 +65,10 @@ enum tune_param_id {
 	TUNE_EMA_DEN,
 	TUNE_FIRE_COOLDOWN,
 	TUNE_FIRE_PULSE,
+	TUNE_PID_KP,
+	TUNE_PID_KI,
+	TUNE_PID_KD,
+	TUNE_PID_IMAX,
 	TUNE_PARAM_COUNT,
 };
 

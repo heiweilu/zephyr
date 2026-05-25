@@ -52,6 +52,10 @@ volatile struct tune_params g_tune = {
 	.ema_den        = 20,
 	.fire_cooldown_ms = 500,  /* ms */
 	.fire_pulse_ms  = 80,     /* ms */
+	.pid_kp         = 30,     /* ×0.01 μs/px */
+	.pid_ki         = 5,      /* ×0.01 μs/(px·cycle) */
+	.pid_kd         = 50,     /* ×0.01 μs·cycle/px */
+	.pid_imax       = 3000,   /* px·cycles */
 };
 
 /* 默认启动模式: 校准 (舵机静止) */
@@ -73,6 +77,10 @@ const struct tune_param_entry tune_param_table[TUNE_PARAM_COUNT] = {
 	[TUNE_EMA_DEN]       = {"ema_den",       TUNE_EMA_DEN,         2,  100, ""},
 	[TUNE_FIRE_COOLDOWN] = {"fire_cooldown", TUNE_FIRE_COOLDOWN, 100, 5000, "ms"},
 	[TUNE_FIRE_PULSE]    = {"fire_pulse",    TUNE_FIRE_PULSE,     20,  500, "ms"},
+	[TUNE_PID_KP]        = {"pid_kp",        TUNE_PID_KP,          0,  200, ""},
+	[TUNE_PID_KI]        = {"pid_ki",        TUNE_PID_KI,          0,   50, ""},
+	[TUNE_PID_KD]        = {"pid_kd",        TUNE_PID_KD,          0,  200, ""},
+	[TUNE_PID_IMAX]      = {"pid_imax",      TUNE_PID_IMAX,        0, 10000, ""},
 };
 
 /* ── DS3225 舵机参数 (固定常量) ── */
@@ -331,7 +339,29 @@ int main(void)
 	int med_idx_x = 0, med_idx_y = 0;
 	int h_dir = 1;
 
+	/* PID 状态 */
+	int32_t pid_integral_h = 0, pid_integral_v = 0;
+	int32_t pid_prev_err_h = 0, pid_prev_err_v = 0;
+	int prev_mode = -1; /* 用于检测模式切换 */
+
 	while (1) {
+		/* 模式切换时重置 PID 状态 */
+		if (g_mode == MODE_TRACKING && prev_mode != MODE_TRACKING) {
+			ema_h_init = false;
+			ema_v_init = false;
+			med_idx_x = 0;
+			med_idx_y = 0;
+			pid_integral_h = 0;
+			pid_integral_v = 0;
+			pid_prev_err_h = 0;
+			pid_prev_err_v = 0;
+			h_pulse = (int32_t)SERVO_CENTER;
+			v_pulse = (int32_t)SERVO_V_CENTER;
+			atomic_set(&track_cx, -1);
+			atomic_set(&track_cy, -1);
+		}
+		prev_mode = g_mode;
+
 		switch (g_mode) {
 		case MODE_CALIBRATION:
 			/* 校准模式: 舵机静止在 center */
@@ -367,18 +397,22 @@ int main(void)
 				ema_v_init = false;
 				med_idx_x = 0;
 				med_idx_y = 0;
+				pid_integral_h = 0;
+				pid_integral_v = 0;
+				pid_prev_err_h = 0;
+				pid_prev_err_v = 0;
 				h_pulse = (int32_t)SERVO_CENTER;
 				v_pulse = (int32_t)SERVO_V_CENTER;
 			}
 
-			/* 追踪一帧 */
+			/* PID 闭环追踪 (摄像头随动模式) */
 			{
 				int cx = (int)atomic_get(&track_cx);
 				int cy = (int)atomic_get(&track_cy);
 				int32_t h_diff = 0, v_diff = 0;
 				int32_t slew = (int32_t)PWM_USEC(TRACK_SLEW_RATE);
 
-				/* 水平追踪 */
+				/* 水平 PID */
 				if (cx >= 0) {
 					med_buf_x[med_idx_x % 3] = cx;
 					med_idx_x++;
@@ -401,24 +435,44 @@ int main(void)
 							  (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * ema_cx) /
 							 EMA_ALPHA_DEN;
 					}
-					int32_t h_target = (int32_t)H_LEFT_PULSE +
-						((int32_t)H_RIGHT_PULSE - (int32_t)H_LEFT_PULSE) *
-						ema_cx / TRACK_FRAME_W +
-						(int32_t)PWM_USEC(TRACK_H_OFFSET);
-					if (h_target > (int32_t)SERVO_H_MAX) h_target = (int32_t)SERVO_H_MAX;
-					if (h_target < (int32_t)SERVO_H_MIN) h_target = (int32_t)SERVO_H_MIN;
-					h_diff = h_target - h_pulse;
+
+					/* PID: error = filtered_cx - center
+					 * 正值 = 目标在右侧 = 需增大脉宽(向右) */
+					int32_t err_h = ema_cx - (TRACK_FRAME_W / 2);
+					pid_integral_h += err_h;
+					if (pid_integral_h > g_tune.pid_imax)
+						pid_integral_h = g_tune.pid_imax;
+					else if (pid_integral_h < -g_tune.pid_imax)
+						pid_integral_h = -g_tune.pid_imax;
+					int32_t deriv_h = err_h - pid_prev_err_h;
+					pid_prev_err_h = err_h;
+
+					int32_t out_h = (g_tune.pid_kp * err_h +
+							 g_tune.pid_ki * pid_integral_h +
+							 g_tune.pid_kd * deriv_h) / 100;
+
+					/* 转为 ns 并限幅 */
+					h_diff = PWM_USEC(out_h);
 					if (h_diff > slew) h_diff = slew;
 					else if (h_diff < -slew) h_diff = -slew;
+
 					if (h_diff != 0) {
 						h_pulse += h_diff;
+						if (h_pulse > (int32_t)SERVO_H_MAX)
+							h_pulse = (int32_t)SERVO_H_MAX;
+						if (h_pulse < (int32_t)SERVO_H_MIN)
+							h_pulse = (int32_t)SERVO_H_MIN;
 #if ENABLE_SERVO_H
 						servo_set(&servo_h, (uint32_t)h_pulse, "servo_h");
 #endif
 					}
+				} else {
+					/* 无目标: 清零积分防漂移 */
+					pid_integral_h = 0;
+					pid_prev_err_h = 0;
 				}
 
-				/* 垂直追踪 */
+				/* 垂直 PID */
 				if (cy >= 0) {
 					med_buf_y[med_idx_y % 3] = cy;
 					med_idx_y++;
@@ -441,21 +495,39 @@ int main(void)
 							  (EMA_ALPHA_DEN - EMA_ALPHA_NUM) * ema_cy) /
 							 EMA_ALPHA_DEN;
 					}
-					int32_t v_target = (int32_t)V_TOP_PULSE +
-						((int32_t)V_BOTTOM_PULSE - (int32_t)V_TOP_PULSE) *
-						ema_cy / TRACK_FRAME_H +
-						(int32_t)(TRACK_V_OFFSET * 1000);
-					if (v_target > (int32_t)SERVO_V_MAX) v_target = (int32_t)SERVO_V_MAX;
-					if (v_target < (int32_t)SERVO_V_MIN) v_target = (int32_t)SERVO_V_MIN;
-					v_diff = v_target - v_pulse;
+
+					/* PID: error = center - filtered_cy
+					 * 正值 = 目标在上方 = 需增大脉宽(向上) */
+					int32_t err_v = (TRACK_FRAME_H / 2) - ema_cy;
+					pid_integral_v += err_v;
+					if (pid_integral_v > g_tune.pid_imax)
+						pid_integral_v = g_tune.pid_imax;
+					else if (pid_integral_v < -g_tune.pid_imax)
+						pid_integral_v = -g_tune.pid_imax;
+					int32_t deriv_v = err_v - pid_prev_err_v;
+					pid_prev_err_v = err_v;
+
+					int32_t out_v = (g_tune.pid_kp * err_v +
+							 g_tune.pid_ki * pid_integral_v +
+							 g_tune.pid_kd * deriv_v) / 100;
+
+					v_diff = PWM_USEC(out_v);
 					if (v_diff > slew) v_diff = slew;
 					else if (v_diff < -slew) v_diff = -slew;
+
 					if (v_diff != 0) {
 						v_pulse += v_diff;
+						if (v_pulse > (int32_t)SERVO_V_MAX)
+							v_pulse = (int32_t)SERVO_V_MAX;
+						if (v_pulse < (int32_t)SERVO_V_MIN)
+							v_pulse = (int32_t)SERVO_V_MIN;
 #if ENABLE_SERVO_V
 						servo_set(&servo_v, (uint32_t)v_pulse, "servo_v");
 #endif
 					}
+				} else {
+					pid_integral_v = 0;
+					pid_prev_err_v = 0;
 				}
 
 				/* 自动发射 */
@@ -467,13 +539,13 @@ int main(void)
 					}
 				}
 #endif
-				if (cx >= 0 || cy >= 0) {
-					LOG_INF("TRK cx=%d cy=%d H=%uus%s V=%uus%s",
+				if (g_telem_enabled) {
+					LOG_INF("TRK cx=%d cy=%d H=%uus%c V=%uus%c",
 						cx, cy,
 						(uint32_t)h_pulse / 1000,
-						h_diff ? "M" : ".",
+						h_diff != 0 ? 'M' : '.',
 						(uint32_t)v_pulse / 1000,
-						v_diff ? "M" : ".");
+						v_diff != 0 ? 'M' : '.');
 				}
 			}
 			k_msleep(TRACK_INTERVAL_MS);

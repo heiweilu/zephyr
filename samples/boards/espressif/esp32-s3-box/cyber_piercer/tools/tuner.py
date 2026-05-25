@@ -212,6 +212,7 @@ VALID_PARAMS = {
     "h_center", "v_center", "h_left", "h_right", "v_top", "v_bottom",
     "h_offset", "v_offset", "slew_rate", "interval", "ema_num",
     "ema_den", "fire_cooldown", "fire_pulse",
+    "pid_kp", "pid_ki", "pid_kd", "pid_imax",
 }
 
 # Active WebSocket connections

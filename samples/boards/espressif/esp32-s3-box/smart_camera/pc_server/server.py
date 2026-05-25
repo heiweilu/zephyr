@@ -26,6 +26,7 @@ os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "0")
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
@@ -267,6 +268,7 @@ def render_for_esp32(frame: np.ndarray, frame_no: int) -> bytes:
 # ─── FastAPI app ────────────────────────────────────────────────────────────
 
 app = FastAPI(title="smart_camera PC server")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 camera: CameraGrabber | None = None
 color_detector = ColorDetector()
 face_detector = FaceDetector()

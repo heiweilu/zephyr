@@ -105,6 +105,10 @@ static volatile int32_t *param_ptr(enum tune_param_id id)
 	case TUNE_EMA_DEN:       return &g_tune.ema_den;
 	case TUNE_FIRE_COOLDOWN: return &g_tune.fire_cooldown_ms;
 	case TUNE_FIRE_PULSE:    return &g_tune.fire_pulse_ms;
+	case TUNE_PID_KP:        return &g_tune.pid_kp;
+	case TUNE_PID_KI:        return &g_tune.pid_ki;
+	case TUNE_PID_KD:        return &g_tune.pid_kd;
+	case TUNE_PID_IMAX:      return &g_tune.pid_imax;
 	default:                 return NULL;
 	}
 }
